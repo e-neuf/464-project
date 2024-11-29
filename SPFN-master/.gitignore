@@ -1,0 +1,10 @@
+experiments
+build
+traceparts_data
+*.zip
+*.pyc
+*.o
+*.so
+*.zip
+*.log
+__pycache__
