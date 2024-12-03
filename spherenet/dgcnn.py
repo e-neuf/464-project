@@ -34,62 +34,56 @@ def get_graph_feature(x, k=20, idx=None, dim9=False):
     return feature      # (batch_size, 2*num_dims, num_points, k)
 
 class DGCNNFeat(nn.Module):
-    def __init__(self, k=20, emb_dims=256, dropout=0.5, global_feat=True):
-        super().__init__()
-        self.k = k
-        self.emb_dims = emb_dims
-        self.dropout = dropout
+    def __init__(self, global_feat=True, emb_dims=512):
+        super(DGCNNFeat, self).__init__()
         self.global_feat = global_feat
-        self.bn1 = nn.BatchNorm2d(64)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.bn3 = nn.BatchNorm2d(64)
-        self.bn4 = nn.BatchNorm2d(64)
-        self.bn5 = nn.BatchNorm2d(64)
+        self.emb_dims = emb_dims  # Define the emb_dims attribute
+        self.conv1 = nn.Conv3d(1, 64, kernel_size=3, padding=1, bias=False)
+        self.conv2 = nn.Conv3d(64, 64, kernel_size=3, padding=1, bias=False)
+        self.conv3 = nn.Conv3d(64, 128, kernel_size=3, padding=1, bias=False)
+        self.conv4 = nn.Conv3d(128, 256, kernel_size=3, padding=1, bias=False)
+        self.conv5 = nn.Conv3d(256, 512, kernel_size=3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm3d(64)
+        self.bn2 = nn.BatchNorm3d(64)
+        self.bn3 = nn.BatchNorm3d(128)
+        self.bn4 = nn.BatchNorm3d(256)
+        self.bn5 = nn.BatchNorm3d(512)
         self.bn6 = nn.BatchNorm1d(self.emb_dims)
-        self.bn7 = nn.BatchNorm1d(512)
-        self.bn8 = nn.BatchNorm1d(256)
-
-        self.conv1 = nn.Sequential(nn.Conv2d(6, 64, kernel_size=1, bias=False),
-                                   self.bn1,
-                                   nn.LeakyReLU(negative_slope=0.2))
-        self.conv2 = nn.Sequential(nn.Conv2d(64, 64, kernel_size=1, bias=False),
-                                   self.bn2,
-                                   nn.LeakyReLU(negative_slope=0.2))
-        self.conv3 = nn.Sequential(nn.Conv2d(64*2, 64, kernel_size=1, bias=False),
-                                   self.bn3,
-                                   nn.LeakyReLU(negative_slope=0.2))
-        self.conv4 = nn.Sequential(nn.Conv2d(64, 64, kernel_size=1, bias=False),
-                                   self.bn4,
-                                   nn.LeakyReLU(negative_slope=0.2))
-        self.conv5 = nn.Sequential(nn.Conv2d(64*2, 64, kernel_size=1, bias=False),
-                                   self.bn5,
-                                   nn.LeakyReLU(negative_slope=0.2))
-        self.conv6 = nn.Sequential(nn.Conv1d(192, self.emb_dims, kernel_size=1, bias=False),
-                                   self.bn6,
-                                   nn.LeakyReLU(negative_slope=0.2))
         
 
     def forward(self, x):
         batch_size = x.size(0)
-        num_points = x.size(2)
+        x = x.unsqueeze(1)  # Add channel dimension: Bx1xDxHxW
 
-        x = get_graph_feature(x, k=self.k, dim9=False)   # (batch_size, 3, num_points) -> (batch_size, 3*2, num_points, k)
-        x = self.conv1(x)                       # (batch_size, 3*2, num_points, k) -> (batch_size, 64, num_points, k)
-        x = self.conv2(x)                       # (batch_size, 64, num_points, k) -> (batch_size, 64, num_points, k)
-        x1 = x.max(dim=-1, keepdim=False)[0]    # (batch_size, 64, num_points, k) -> (batch_size, 64, num_points)
+        x = self.conv1(x)  # Bx1xDxHxW -> Bx64xDxHxW
+        x = self.bn1(x)
+        x = nn.LeakyReLU(negative_slope=0.2)(x)
 
-        x = get_graph_feature(x1, k=self.k)     # (batch_size, 64, num_points) -> (batch_size, 64*2, num_points, k)
-        x = self.conv3(x)                       # (batch_size, 64*2, num_points, k) -> (batch_size, 64, num_points, k)
-        x = self.conv4(x)                       # (batch_size, 64, num_points, k) -> (batch_size, 64, num_points, k)
-        x2 = x.max(dim=-1, keepdim=False)[0]    # (batch_size, 64, num_points, k) -> (batch_size, 64, num_points)
+        x = self.conv2(x)  # Bx64xDxHxW -> Bx64xDxHxW
+        x = self.bn2(x)
+        x = nn.LeakyReLU(negative_slope=0.2)(x)
+        x1 = x
 
-        x = get_graph_feature(x2, k=self.k)     # (batch_size, 64, num_points) -> (batch_size, 64*2, num_points, k)
-        x = self.conv5(x)                       # (batch_size, 64*2, num_points, k) -> (batch_size, 64, num_points, k)
-        x3 = x.max(dim=-1, keepdim=False)[0]    # (batch_size, 64, num_points, k) -> (batch_size, 64, num_points)
+        x = self.conv3(x)  # Bx64xDxHxW -> Bx128xDxHxW
+        x = self.bn3(x)
+        x = nn.LeakyReLU(negative_slope=0.2)(x)
+        x2 = x
 
-        x = torch.cat((x1, x2, x3), dim=1)      # (batch_size, 64*3, num_points)
+        x = self.conv4(x)  # Bx128xDxHxW -> Bx256xDxHxW
+        x = self.bn4(x)
+        x = nn.LeakyReLU(negative_slope=0.2)(x)
+        x3 = x
 
-        x = self.conv6(x)                       # (batch_size, 64*3, num_points) -> (batch_size, emb_dims, num_points)
+        x = self.conv5(x)  # Bx256xDxHxW -> Bx512xDxHxW
+        x = self.bn5(x)
+        x = nn.LeakyReLU(negative_slope=0.2)(x)
+        x4 = x
+
         if self.global_feat:
-            x = x.max(dim=-1)[0]                # (batch_size, emb_dims, num_points) -> (batch_size, emb_dims)
-        return x                                # (batch_size, emb_dims, num_points)
+            x = torch.max(x4, dim=2)[0]  # Global max pooling along depth dimension
+            x = torch.max(x, dim=2)[0]  # Global max pooling along height dimension
+            x = torch.max(x, dim=2)[0]  # Global max pooling along width dimension
+        else:
+            x = torch.cat((x1, x2, x3, x4), dim=1)  # Concatenate along channel dimension
+
+        return x
