@@ -126,14 +126,43 @@ def preprocess_voxel_data(voxel_data, target_shape=(64, 64, 64), sigma=1.0):
 
     return voxel_data
 
+def visualise_voxels(voxel_data):
+    """
+    Visualize voxel data using Trimesh.
+
+    Args:
+        voxel_data (torch.Tensor or np.ndarray): A 3D boolean tensor/array representing voxel occupancy.
+    """
+    # Convert PyTorch tensor to NumPy array if needed
+    if isinstance(voxel_data, torch.Tensor):
+        voxel_data = voxel_data.cpu().numpy()
+
+    # Ensure voxel_data is boolean
+    voxel_data = voxel_data.astype(bool)
+
+    # Create a VoxelGrid from the boolean array
+    voxel_grid = trimesh.voxel.VoxelGrid(voxel_data)
+
+    # Convert voxel grid to a mesh
+    mesh = voxel_grid.as_boxes()
+
+    # Create a scene and add the mesh
+    scene = trimesh.Scene()
+    scene.add_geometry(mesh)
+
+    # Show the scene
+    scene.show()
+
 def main():
-    dataset_path = "./data"
-    name = "shiba"
+    dataset_path = "./reference_models_processed"
+    name = "dog"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    path = os.path.join(dataset_path, name, "voxel_and_sdf.npz")
+
     # Load the voxel data from the .npz file
-    data = np.load("reference_models_processed/dog/voxel_and_sdf.npz")
+    data = np.load(os.path.join(dataset_path, name, "voxel_and_sdf.npz"))
     print(data.files)  # Inspect the contents of the .npz file
 
     voxel_data = data["voxels"]
@@ -152,6 +181,8 @@ def main():
     values = data["sdf_values"]
 
     # visualise_sdf(points, values)
+
+    # visualise_voxels(voxel_data)
 
     # Apply the same transformations to the points
     points = (points - centroid) / scale
