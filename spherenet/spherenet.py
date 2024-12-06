@@ -55,7 +55,7 @@ class Decoder(nn.Module):
         return out2
 
 class SphereNet(nn.Module):
-    def __init__(self, num_spheres=256):
+    def __init__(self, num_spheres=512):
         super(SphereNet, self).__init__()
         self.num_spheres = num_spheres
         self.encoder = DGCNNFeat(global_feat=True)
@@ -72,7 +72,7 @@ class SphereNet(nn.Module):
         sphere_sdf = determine_sphere_sdf(query_points, sphere_params)
         return sphere_sdf, sphere_params
 
-def visualise_spheres(sphere_params, reference_model=None, save_path=None):
+def visualise_spheres(points, values, sphere_params, reference_model=None, save_path=None):
     sphere_params = sphere_params.cpu().detach().numpy()
     sphere_centers = sphere_params[..., :3]
     sphere_radii = np.abs(sphere_params[..., 3])
@@ -86,12 +86,10 @@ def visualise_spheres(sphere_params, reference_model=None, save_path=None):
         sphere.apply_translation(center)
         scene.add_geometry(sphere)
 
-    if reference_model is not None:
-        # Apply the translation to align the mesh with the sphere cluster centroid
-        reference_model.apply_translation(centroid)
-        # Set the opacity of the mesh to 50%
-        reference_model.visual.face_colors = [0, 0, 255, 128]  # Blue color with 50% opacity
-        scene.add_geometry(reference_model)
+    inside_points = points[values < 0]
+    inside_points = trimesh.points.PointCloud(inside_points)
+    inside_points.colors = [0, 0, 255, 255]  # Blue color for inside points
+    scene.add_geometry([inside_points])
         
     if save_path is not None:
         scene.export(save_path)
@@ -102,8 +100,8 @@ def visualise_sdf(points, values):
     outside_points = points[values > 0]
     inside_points = trimesh.points.PointCloud(inside_points)
     outside_points = trimesh.points.PointCloud(outside_points)
-    inside_points.colors = [0, 0, 1, 1]  # Blue color for inside points
-    outside_points.colors = [1, 0, 0, 1]  # Red color for outside points
+    inside_points.colors = [0, 0, 255, 255]  # Blue color for inside points
+    outside_points.colors = [255, 0, 0, 255]  # Red color for outside points
     scene = trimesh.Scene()
     scene.add_geometry([inside_points, outside_points])
     scene.show()
@@ -185,7 +183,7 @@ def main():
     # visualise_voxels(voxel_data)
 
     # Apply the same transformations to the points
-    points = (points - centroid) / scale
+    # points = (points - centroid) \ scale
 
     points = torch.from_numpy(points).float().to(device)
     values = torch.from_numpy(values).float().to(device)
@@ -213,13 +211,13 @@ def main():
         # Bonus: Design additional losses that helps to achieve a better result.
         # mseloss = 0
 
-        loss = mseloss
+        loss = mseloss 
         loss.backward()
         optimizer.step()
         print(f"Iteration {i}, Loss: {loss.item()}")
 
-        if loss < 0.0028:   #modify as needed
-            break
+        # if loss < 0.0028:   #modify as needed
+        #     break
         
     output_dir = "./output"
     os.makedirs(output_dir, exist_ok=True)
@@ -228,7 +226,7 @@ def main():
     
     print(sphere_params)
 
-    visualise_spheres(sphere_params, reference_model=None, save_path=os.path.join(output_dir, f"{name}_spheres.obj"))
+    visualise_spheres(points, values, sphere_params, reference_model=None, save_path=os.path.join(output_dir, f"{name}_spheres.obj"))
 
     torch.save(model.state_dict(), os.path.join(output_dir, f"{name}_model.pth"))
 
