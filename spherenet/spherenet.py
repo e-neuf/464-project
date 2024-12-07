@@ -22,9 +22,9 @@ def determine_sphere_sdf(query_points, sphere_params):
 class Decoder(nn.Module):
     def __init__(self):
         super(Decoder, self).__init__()
-        in_ch = 512
-        feat_ch = 512
-        out_ch = 1024
+        in_ch = 256
+        feat_ch = 256
+        out_ch = 512
         self.net1 = nn.Sequential(
             nn.utils.weight_norm(nn.Linear(in_ch, feat_ch)),
             nn.ReLU(inplace=True),
@@ -191,7 +191,7 @@ def main():
     model = SphereNet(num_spheres=256).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 
-    num_epochs = 100   #change parameter for number of itearations
+    num_epochs = 50   #change parameter for number of itearations
     for i in range(num_epochs):
         optimizer.zero_grad()
         sphere_sdf, sphere_params = model(
