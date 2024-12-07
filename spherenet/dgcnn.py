@@ -4,21 +4,23 @@ import torch
 import torch.nn as nn
 
 class DGCNNFeat(nn.Module):
-    def __init__(self, global_feat=True, emb_dims=512):
+    def __init__(self, global_feat=True, emb_dims=256):
         super(DGCNNFeat, self).__init__()
         self.global_feat = global_feat
         self.emb_dims = emb_dims  # Define the emb_dims attribute
-        self.conv1 = nn.Conv3d(1, 64, kernel_size=3, padding=1, bias=False)
-        self.conv2 = nn.Conv3d(64, 128, kernel_size=3, padding=1, bias=False)
-        self.conv3 = nn.Conv3d(128, 256, kernel_size=3, padding=1, bias=False)
-        self.conv4 = nn.Conv3d(256, 512, kernel_size=3, padding=1, bias=False)
+        self.conv1 = nn.Conv3d(1, 32, kernel_size=3, padding=1, bias=False)
+        self.conv2 = nn.Conv3d(32, 64, kernel_size=3, padding=1, bias=False)
+        self.conv3 = nn.Conv3d(64, 128, kernel_size=3, padding=1, bias=False)
+        self.conv4 = nn.Conv3d(128, 256, kernel_size=3, padding=1, bias=False)
         # self.conv5 = nn.Conv3d(256, 512, kernel_size=3, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm3d(64)
-        self.bn2 = nn.BatchNorm3d(128)
-        self.bn3 = nn.BatchNorm3d(256)
-        self.bn4 = nn.BatchNorm3d(512)
+        self.bn1 = nn.BatchNorm3d(32)
+        self.bn2 = nn.BatchNorm3d(64)
+        self.bn3 = nn.BatchNorm3d(128)
+        self.bn4 = nn.BatchNorm3d(256)
         # self.bn5 = nn.BatchNorm3d(512)
         # self.bn6 = nn.BatchNorm1d(self.emb_dims)
+
+        self.fc = nn.Linear(256, self.emb_dims)
         
 
     def forward(self, x):
@@ -50,9 +52,12 @@ class DGCNNFeat(nn.Module):
         # x4 = x
 
         if self.global_feat:
-            x = torch.max(x3, dim=2)[0]  # Global max pooling along depth dimension
-            x = torch.max(x, dim=2)[0]  # Global max pooling along height dimension
-            x = torch.max(x, dim=2)[0]  # Global max pooling along width dimension
+            # x = torch.max(x3, dim=2)[0]  # Global max pooling along depth dimension
+            # x = torch.max(x, dim=2)[0]  # Global max pooling along height dimension
+            # x = torch.max(x, dim=2)[0]  # Global max pooling along width dimension
+
+            x = torch.mean(x3, dim=(2, 3, 4))  # Global average pooling
+            x = self.fc(x)
         else:
             x = torch.cat((x1, x2, x3), dim=1)  # Concatenate along channel dimension
 
