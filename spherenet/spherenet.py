@@ -24,6 +24,7 @@ def determine_cone_sdf(query_points, cone_params):
     cone_centers = cone_params[:, :, :3]
     cone_radii = cone_params[:, :, 3]
     cone_heights = cone_params[:, :, 4]
+    cone_orientations = cone_params[:, :, 5:8]
     vectors_points_to_centers = query_points[:, None, :] - cone_centers[None, :, :, :]
     distance_points_to_centers = torch.norm(vectors_points_to_centers[:, :, :, :2], dim=-1)
     cone_sdf = torch.max(distance_points_to_centers - cone_radii * (1 - vectors_points_to_centers[:, :, :, 2] / cone_heights), torch.abs(vectors_points_to_centers[:, :, :, 2]) - cone_heights)
@@ -32,7 +33,7 @@ def determine_cone_sdf(query_points, cone_params):
 class Decoder(nn.Module):
     def __init__(self, in_ch, out_ch):
         super(Decoder, self).__init__()
-        feat_ch = 256
+        feat_ch = 256  # Adjusted feature channels
         self.net1 = nn.Sequential(
             nn.utils.weight_norm(nn.Linear(in_ch, feat_ch)),
             nn.ReLU(inplace=True),
@@ -67,7 +68,7 @@ class SphereNet(nn.Module):
         super(SphereNet, self).__init__()
         self.num_spheres = num_spheres
         self.encoder = DGCNNFeat(global_feat=True)
-        self.decoder = Decoder(512, 1024)
+        self.decoder = Decoder(256, 512)
 
     def forward(self, voxel_data, query_points):
         # Pass the voxel data through the encoder
@@ -82,11 +83,11 @@ class SphereNet(nn.Module):
     
 
 class ConeNet(nn.Module):
-    def __init__(self, num_cones=256):
+    def __init__(self, num_cones=128):  
         super(ConeNet, self).__init__()
         self.num_cones = num_cones
         self.encoder = DGCNNFeat(global_feat=True)
-        self.decoder = Decoder(256, num_cones * 5)
+        self.decoder = Decoder(256, 512)  # 8 parameters: center (3), radius (1), height (1), orientation (3)
 
     def forward(self, voxel_data, query_points):
         # Pass the voxel data through the encoder
@@ -95,10 +96,10 @@ class ConeNet(nn.Module):
 
         # Decode the features into cone parameters
         cone_params = self.decoder(features)
-        cone_params = torch.sigmoid(cone_params.view(-1, self.num_cones, 5))
+        cone_params = torch.sigmoid(cone_params.view(-1, self.num_cones, 8))
 
-        cone_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1, 0.1]).to(cone_params.device)
-        cone_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.4, 0.4]).to(cone_params.device)
+        cone_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1, 0.1, -1.0, -1.0, -1.0]).to(cone_params.device)
+        cone_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.4, 0.4, 2.0, 2.0, 2.0]).to(cone_params.device)
         cone_params = cone_params * cone_multiplier + cone_adder
 
         cone_sdf = determine_cone_sdf(query_points, cone_params)
@@ -144,11 +145,12 @@ def compute_pca(data):
     
     return principal_component
 
-def visualize_cones(points, values, cone_params, reference_model=None, save_path=None):
+def visualize_cones(points, values, cone_params, save_path=None):
     cone_params = cone_params.cpu().detach().numpy()
     cone_centers = cone_params[..., :3]
     cone_radii = np.abs(cone_params[..., 3])
     cone_heights = np.abs(cone_params[..., 4])
+    cone_orientations = cone_params[..., 5:8]
     scene = trimesh.Scene()
 
     for i in range(cone_centers.shape[0]):
@@ -156,21 +158,11 @@ def visualize_cones(points, values, cone_params, reference_model=None, save_path
             center = cone_centers[i, j]
             radius = cone_radii[i, j]
             height = cone_heights[i, j]
+            orientation = cone_orientations[i, j]
             
             # Ensure radius and height are scalar values
             radius = float(radius)
             height = float(height)
-            
-            # Extract voxel data points within the region of the cone
-            mask = np.linalg.norm(points.cpu().detach().numpy() - center, axis=1) < radius
-            region_points = points[mask].cpu().detach().numpy()
-            
-            if len(region_points) > 0:
-                # Compute the principal direction using custom PCA
-                orientation = compute_pca(region_points)
-            else:
-                # Default orientation along the z-axis if no points are found
-                orientation = np.array([0, 0, 1])
             
             # Normalize the orientation vector
             orientation = orientation / np.linalg.norm(orientation)
@@ -212,12 +204,6 @@ def visualise_sdf(points, values):
     scene = trimesh.Scene()
     scene.add_geometry([inside_points, outside_points])
     scene.show()
-
-def voxel_to_mesh(voxel_data):
-    # Convert voxel data to a mesh representation
-    voxel_data = voxel_data.cpu().numpy()
-    mesh = trimesh.voxel.ops.matrix_to_marching_cubes(voxel_data, pitch=1.0)
-    return mesh
 
 def preprocess_voxel_data(voxel_data, target_shape=(64, 64, 64), sigma=1.0):
     # Normalize the voxel data
@@ -277,7 +263,6 @@ def main():
     voxel_data = torch.from_numpy(voxel_data).float().to(device)
 
     # Convert voxel data to mesh
-    # reference_model = voxel_to_mesh(voxel_data)
 
     # Load other necessary data
     points = data["sdf_points"]
@@ -294,10 +279,10 @@ def main():
     values = torch.from_numpy(values).float().to(device)
 
     # model = SphereNet(num_spheres=256).to(device)
-    model = ConeNet(num_cones=256).to(device)
+    model = ConeNet(num_cones=64).to(device)  # Adjusted num_cones to 64
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 
-    num_epochs = 50   #change parameter for number of itearations
+    num_epochs = 100   #change parameter for number of itearations
     for i in range(num_epochs):
         optimizer.zero_grad()
         cone_sdf, cone_params = model(
@@ -339,8 +324,8 @@ def main():
     # print(sphere_params)
     print(cone_params)
 
-    # visualise_spheres(points, values, sphere_params, reference_model=None, save_path=os.path.join(output_dir, f"{name}_spheres.obj"))
-    visualize_cones(points, values, cone_params, reference_model=None, save_path=os.path.join(output_dir, f"{name}_cones.obj"))
+    # visualise_spheres(points, values, sphere_params, save_path=os.path.join(output_dir, f"{name}_spheres.obj"))
+    visualize_cones(points, values, cone_params, save_path=os.path.join(output_dir, f"{name}_cones.obj"))
     
     torch.save(model.state_dict(), os.path.join(output_dir, f"{name}_model.pth"))
 
