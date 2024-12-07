@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import os
 import trimesh
@@ -31,9 +32,7 @@ def determine_cone_sdf(query_points, cone_params):
 class Decoder(nn.Module):
     def __init__(self, in_ch, out_ch):
         super(Decoder, self).__init__()
-        in_ch = 256
         feat_ch = 256
-        out_ch = 512
         self.net1 = nn.Sequential(
             nn.utils.weight_norm(nn.Linear(in_ch, feat_ch)),
             nn.ReLU(inplace=True),
@@ -87,7 +86,7 @@ class ConeNet(nn.Module):
         super(ConeNet, self).__init__()
         self.num_cones = num_cones
         self.encoder = DGCNNFeat(global_feat=True)
-        self.decoder = Decoder(512, num_cones * 5)
+        self.decoder = Decoder(256, num_cones * 5)
 
     def forward(self, voxel_data, query_points):
         # Pass the voxel data through the encoder
