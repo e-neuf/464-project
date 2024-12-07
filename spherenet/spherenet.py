@@ -7,6 +7,8 @@ from scipy.ndimage import gaussian_filter
 from skimage.transform import resize
 from dgcnn import DGCNNFeat
 
+num_shapes = 10
+
 def bsmin(a, dim, k=22.0, keepdim=False):
     dmix = -torch.logsumexp(-k * a, dim=dim, keepdim=keepdim) / k
     return dmix
@@ -24,7 +26,7 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         in_ch = 512
         feat_ch = 512
-        out_ch = 1024
+        out_ch = num_shapes * 8
         self.net1 = nn.Sequential(
             nn.utils.weight_norm(nn.Linear(in_ch, feat_ch)),
             nn.ReLU(inplace=True),
@@ -55,7 +57,7 @@ class Decoder(nn.Module):
         return out2
 
 class SphereNet(nn.Module):
-    def __init__(self, num_spheres=256):
+    def __init__(self, num_spheres=num_shapes):
         super(SphereNet, self).__init__()
         self.num_spheres = num_spheres
         self.encoder = DGCNNFeat(global_feat=True)
@@ -65,9 +67,15 @@ class SphereNet(nn.Module):
         # Pass the voxel data through the encoder
         features = self.encoder(voxel_data)
         sphere_params = self.decoder(features)
-        sphere_params = torch.sigmoid(sphere_params.view(-1, 4))
-        sphere_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1]).to(sphere_params.device)
-        sphere_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.4]).to(sphere_params.device)
+        #print("shape after decoder:")
+        #print(sphere_params.shape)
+        sphere_params = torch.sigmoid(sphere_params.view(-1, 8))
+        #print("shape after sigmoid view thingy:")
+        #print(sphere_params.shape)
+        #sphere_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1]).to(sphere_params.device)
+        #sphere_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.4]).to(sphere_params.device)
+        sphere_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1, 0.1, 0.1, 0.1, 0.1]).to(sphere_params.device)
+        sphere_multiplier = torch.tensor([1.0, 1.0, 1.0,1.0, 1.0, 1.0, 0.4, 0.4]).to(sphere_params.device)
         sphere_params = sphere_params * sphere_multiplier + sphere_adder
         sphere_sdf = determine_sphere_sdf(query_points, sphere_params)
         return sphere_sdf, sphere_params
@@ -153,17 +161,55 @@ def visualise_voxels(voxel_data):
     # Show the scene
     scene.show()
 
+# taken from task 2 of the assignment
+def create_cylinder_mesh(center, direction, radius, height, color=[0, 1, 0]):
+    """
+    Create a cylinder mesh in trimesh centered at `center` and aligned to `direction`.
+
+    Args:
+        center (np.ndarray): The center point of the cylinder.
+        direction (np.ndarray): A vector indicating the cylinder's orientation.
+        radius (float): The radius of the cylinder.
+        height (float): The height of the cylinder.
+        color (list): RGB color of the cylinder.
+
+    Returns:
+        trimesh.Trimesh: A trimesh object representing the cylinder.
+    """
+    # Create a cylinder aligned with the Z-axis
+    cylinder = trimesh.creation.cylinder(radius=radius, height=height, sections=32)
+
+    # Normalize the direction vector
+    direction = np.array(direction)
+    direction /= np.linalg.norm(direction)
+
+    # Compute the rotation matrix to align the cylinder's Z-axis with the given direction vector
+    z_axis = np.array([0, 0, 1])  # The default axis of the cylinder
+    rotation_matrix = trimesh.geometry.align_vectors(z_axis, direction)
+
+    # Apply rotation to the cylinder
+    cylinder.apply_transform(rotation_matrix)
+
+    # Translate the cylinder to the desired center position
+    cylinder.apply_translation(center)
+
+    # Apply color to the cylinder mesh
+    cylinder.visual.face_colors = np.array(color + [1.0]) * 255  # Color the mesh faces
+
+    return cylinder
+
+
+
 def main():
     dataset_path = "./reference_models_processed"
     name = "dog"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     path = os.path.join(dataset_path, name, "voxel_and_sdf.npz")
 
     # Load the voxel data from the .npz file
-    data = np.load(os.path.join(dataset_path, name, "voxel_and_sdf.npz"))
-    print(data.files)  # Inspect the contents of the .npz file
+    data = np.load(path)
+    #print(data.files)  # Inspect the contents of the .npz file
 
     voxel_data = data["voxels"]
     centroid = data["centroid"]
@@ -181,7 +227,6 @@ def main():
     values = data["sdf_values"]
 
     # visualise_sdf(points, values)
-
     # visualise_voxels(voxel_data)
 
     # Apply the same transformations to the points
@@ -190,29 +235,18 @@ def main():
     points = torch.from_numpy(points).float().to(device)
     values = torch.from_numpy(values).float().to(device)
 
-    model = SphereNet(num_spheres=256).to(device)
+    model = SphereNet(num_spheres=num_shapes).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 
-    num_epochs = 100   #change parameter for number of itearations
+    num_epochs = 10   #change parameter for number of itearations
     for i in range(num_epochs):
         optimizer.zero_grad()
-        sphere_sdf, sphere_params = model(
+        cylinder_sdf, cylinder_params = model(
             voxel_data.unsqueeze(0), points
         )
         
-        # bsmin approximates the minimum of tensor sphere_sdf along the last dimension,
-        # in this case the number of spheres. The function effectively approximates the
-        # minimum signed distance from each query point to all spheres. Once the minimum
-        # is approximated it can be used for loss calculations which will be used to
-        # minimize the difference between predicted and truth SDF’s during training.
-        sphere_sdf = bsmin(sphere_sdf, dim=-1).to(device)
-
-        # Determine the loss function to train the model, i.e. the mean squared error between gt sdf field and predicted sdf field.
-        mseloss = torch.mean((sphere_sdf - values) ** 2)
-        
-        # Bonus: Design additional losses that helps to achieve a better result.
-        # mseloss = 0
-
+        cylinder_sdf = bsmin(cylinder_sdf, dim=-1).to(device)
+        mseloss = nn.MSELoss()(cylinder_sdf, values)
         loss = mseloss
         loss.backward()
         optimizer.step()
@@ -223,12 +257,25 @@ def main():
         
     output_dir = "./output"
     os.makedirs(output_dir, exist_ok=True)
+    np.save(os.path.join(output_dir, f"{name}_cylinder_params.npy"), cylinder_params.cpu().detach().numpy())
     
-    np.save(os.path.join(output_dir, f"{name}_sphere_params.npy"), sphere_params.cpu().detach().numpy())
-    
-    print(sphere_params)
+    #print(cylinder_params)
 
-    visualise_spheres(sphere_params, reference_model=None, save_path=os.path.join(output_dir, f"{name}_spheres.obj"))
+    #visualise_spheres(sphere_params, reference_model=None, save_path=os.path.join(output_dir, f"{name}_spheres.obj"))
+
+    # modified from task 2 of the assignment to visualize the cylinders as meshes
+
+    cylinders = []
+    for i in range(num_shapes):
+        cylinder_center, cylinder_axis, cylinder_radius, cylinder_height = (
+            cylinder_params[i][0:3].detach().numpy(),
+            cylinder_params[i][3:6].detach().numpy(),
+            cylinder_params[i][6].detach().numpy(),
+            cylinder_params[i][7].detach().numpy() ) # cylinder params row has 8 things in it
+        cylinders.append(create_cylinder_mesh(
+            cylinder_center, cylinder_axis, cylinder_radius, height=cylinder_height ))
+    scene = trimesh.Scene(cylinders)
+    scene.show()
 
     torch.save(model.state_dict(), os.path.join(output_dir, f"{name}_model.pth"))
 
