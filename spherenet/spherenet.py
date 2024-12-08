@@ -44,15 +44,15 @@ class SphereNet(nn.Module):
         # Pass the voxel data through the encoder
         features = self.encoder(voxel_data)
 
-        print(f"SphereNet Input Size: {features.shape}")
+        # print(f"SphereNet Input Size: {features.shape}")
         
         sphere_params = self.decoder(features)
-        print(f"Decoder Output Shape: {sphere_params.shape}")  # Debug decoder output shape
+        # print(f"Decoder Output Shape: {sphere_params.shape}")  # Debug decoder output shape
 
         sphere_params = self.feature_mapper(sphere_params).view(self.num_spheres, 4)
 
         sphere_params = torch.sigmoid(sphere_params.view(-1, 4))
-        print(f"Sphere Params Shape: {sphere_params.shape}")  # Debug reshaped sphere_params
+        # print(f"Sphere Params Shape: {sphere_params.shape}")  # Debug reshaped sphere_params
 
         sphere_adder = torch.tensor([-0.5, -0.5, -0.5, 0.01]).to(sphere_params.device)
         sphere_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.2]).to(sphere_params.device)
