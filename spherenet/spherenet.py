@@ -12,18 +12,19 @@ from dgcnn import DGCNNFeat
 
 
 def initialize_cone_centers(voxel_points, values, num_cones, device):
-    kmeans = KMeans(n_clusters=num_cones)
-
-    voxel_points = voxel_points[values < 0]
-    kmeans.fit(voxel_points)
-    centers = kmeans.cluster_centers_
-    return torch.tensor(centers, dtype=torch.float32).to(device)
+    #we kmeans to calculate because it provides a good initial guess for the centers by gathering points that are close together
+    #works on voxels that are inside the object
+    kmeans = KMeans(n_clusters=num_cones)   #calculating kmeans for initial centers 
+    voxel_points = voxel_points[values < 0] #ensuring only using points inside the object
+    kmeans.fit(voxel_points) #fitting the kmeans
+    centers = kmeans.cluster_centers_ 
+    return torch.tensor(centers, dtype=torch.float32).to(device) 
 
 def cone_overlap_loss(cone_params):
-    batch_size, num_cones, _ = cone_params.shape
-    cone_centers = cone_params[:, :, :3]
-    cone_radii = cone_params[:, :, 3]
-    cone_heights = cone_params[:, :, 4]
+    batch_size, num_cones, _ = cone_params.shape    
+    cone_centers = cone_params[:, :, :3] #first 3 values are the center
+    cone_radii = cone_params[:, :, 3] #4th value is the radius
+    cone_heights = cone_params[:, :, 4] #5th value is the height
     
     overlap_loss = 0.0
     
@@ -31,40 +32,41 @@ def cone_overlap_loss(cone_params):
         for j in range(i + 1, num_cones):
             center_i = cone_centers[:, i, :]
             center_j = cone_centers[:, j, :]
+
             radius_i = cone_radii[:, i]
             radius_j = cone_radii[:, j]
-            height_i = cone_heights[:, i]
-            height_j = cone_heights[:, j]
             
-            # Calculate the distance between the centers of the cones
+            # Calculate the euclidean distance between the centers of the cones
             distance = torch.norm(center_i - center_j, dim=-1)
             
             # Calculate the overlap between the cones
+            #overalp if sume of radius is greater than distance between centers
             overlap = torch.max(torch.tensor(0.0).to(cone_params.device), radius_i + radius_j - distance)
             
             # Add the overlap to the total overlap loss
             overlap_loss += overlap.mean()
     
-    return overlap_loss / (num_cones * (num_cones - 1) / 2)
+    return overlap_loss / (num_cones * (num_cones - 1) / 2) #normalize
 
 def bsmin(a, dim, k=22.0, keepdim=False):
+    # soft min of tensor a along dimension dim
+    # k is the smoothness parameter
+    # keepdim is whether to keep the dimension of the input
     dmix = -torch.logsumexp(-k * a, dim=dim, keepdim=keepdim) / k
     return dmix
-    sphere_centers = sphere_params[:, :, :3]
-    sphere_radii = sphere_params[:, :, 3]
-    vectors_points_to_centers = query_points[:, None, :] - sphere_centers[None, :, :, :]
-    distance_points_to_centers = torch.norm(vectors_points_to_centers, dim=-1)
-    sphere_sdf = distance_points_to_centers - sphere_radii
-    return sphere_sdf
 
 def determine_cone_sdf(query_points, cone_params):
     cone_centers = cone_params[:, :, :3]
     cone_radii = cone_params[:, :, 3]
     cone_heights = cone_params[:, :, 4]
     cone_orientations = cone_params[:, :, 5:8]
-    cone_orientations = F.normalize(cone_orientations, dim=-1)  # Ensure normalized orientations
+    cone_orientations = F.normalize(cone_orientations, dim=-1)  # normalized orientations (unit vectors)
+
+    #from query point to cone center
     vectors_points_to_centers = query_points[:, None, :] - cone_centers[None, :, :, :]
+    #euclidean distance from query point to con center in xy plane 
     distance_points_to_centers = torch.norm(vectors_points_to_centers[:, :, :, :2], dim=-1)
+
     cone_sdf = torch.max(
         distance_points_to_centers - cone_radii * (1 - vectors_points_to_centers[:, :, :, 2] / cone_heights),
         torch.abs(vectors_points_to_centers[:, :, :, 2]) - cone_heights
@@ -74,30 +76,32 @@ def determine_cone_sdf(query_points, cone_params):
 class Decoder(nn.Module):
     def __init__(self, in_ch, out_ch):
         super(Decoder, self).__init__()
-        feat_ch = 256  # Increased feature channels
+        feat_ch = 256  
         print (in_ch, feat_ch, out_ch)
+
         self.net1 = nn.Sequential(
             nn.utils.weight_norm(nn.Linear(in_ch, feat_ch)),
             nn.ReLU(inplace=True),
             nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
-            # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
-            # nn.ReLU(inplace=True),
-            # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
-            # nn.ReLU(inplace=True),
+            nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            nn.ReLU(inplace=True),
+            nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            nn.ReLU(inplace=True),
         )
         self.net2 = nn.Sequential(
             nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
             nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
-        #     nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
-        #     nn.ReLU(inplace=True),
-        #     nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
-        #     nn.ReLU(inplace=True),
-        #     nn.Linear(feat_ch, out_ch),
+            nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            nn.ReLU(inplace=True),
+            nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            nn.ReLU(inplace=True),
+            nn.Linear(feat_ch, out_ch),
         )
-        num_params = sum(p.numel() for p in self.parameters())
+
+        num_params = sum(p.numel() for p in self.parameters())  #total number of parameters in the model
         print("[num parameters: {}]".format(num_params))
 
     def forward(self, z):
@@ -106,22 +110,26 @@ class Decoder(nn.Module):
         return out2
 
 class ConeNet(nn.Module):
-    def __init__(self, num_cones=32):  # Adjusted num_cones to 256
+    def __init__(self, num_cones=32):  # default 32 cones 
         super(ConeNet, self).__init__()
         self.num_cones = num_cones
-        self.encoder = DGCNNFeat(global_feat=True)
-        self.decoder = Decoder(512, num_cones * 8)  # 8 parameters: center (3), radius (1), height (1), orientation (3)
+        self.encoder = DGCNNFeat(global_feat=True) #initialize encoder with DGCNN
+        self.decoder = Decoder(512, num_cones * 8)  #initialize decoder with 8 parameters for each cone
+        # 8 parameters: center (3), radius (1), height (1), orientation (3)
 
     def forward(self, voxel_data, query_points, initial_centers):
         # Pass the voxel data through the encoder
-        features = self.encoder(voxel_data)
-        features = features.view(features.size(0), -1)  # Flatten the features
+        features = self.encoder(voxel_data) #extract features
+        #features 5D tensor: batch_size, channels, depth, height, width
+        features = features.view(features.size(0), -1)  # Flatten the features from 5D to 2D
 
         # Decode the features into cone parameters
         cone_params = self.decoder(features)
         cone_params = torch.sigmoid(cone_params.view(-1, self.num_cones, 8))
+        #sigmoid: squashes the output to be between 0 and 1
 
-        cone_adder = torch.tensor([-0.5, -0.5, -0.5, 0.01, 0.01, -1.0, -1.0, -1.0]).to(cone_params.device)
+        #adjusting cone parameters
+        cone_adder = torch.tensor([-0.5, -0.5, -0.5, 0.08, 0.08, -1.0, -1.0, -1.0]).to(cone_params.device)
         cone_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.3, 0.3, 2.0, 2.0, 2.0]).to(cone_params.device)
         cone_params = cone_params * cone_multiplier + cone_adder
 
@@ -150,11 +158,13 @@ def compute_pca(data):
     return principal_component
 
 def visualize_cones(points, values, cone_params, save_path=None):
-    cone_params = cone_params.cpu().detach().numpy()
+    cone_params = cone_params.cpu().detach().numpy() #covert to array 
+
     cone_centers = cone_params[..., :3]
     cone_radii = np.abs(cone_params[..., 3])
     cone_heights = np.abs(cone_params[..., 4])
     cone_orientations = cone_params[..., 5:8]
+
     scene = trimesh.Scene()
 
     for i in range(cone_centers.shape[0]):
@@ -164,7 +174,6 @@ def visualize_cones(points, values, cone_params, save_path=None):
             height = cone_heights[i, j]
             orientation = cone_orientations[i, j]
 
-            # Ensure radius and height are scalar values
             radius = float(radius)
             height = float(height)
 
@@ -173,7 +182,7 @@ def visualize_cones(points, values, cone_params, save_path=None):
             region_points = points[mask].cpu().detach().numpy()
             
             if len(region_points) > 0:
-                # Compute the principal direction using PCA
+                # Compute the principal direction using PCA if points are in region
                 orientation = compute_pca(region_points)
             else:
                 # Default orientation along the z-axis if no points are found
@@ -188,8 +197,9 @@ def visualize_cones(points, values, cone_params, save_path=None):
             # Compute the rotation matrix to align the cone with the orientation vector
             z_axis = np.array([0, 0, 1])
             rotation_axis = np.cross(z_axis, orientation)
+
             if np.linalg.norm(rotation_axis) < 1e-6:
-                rotation_matrix = np.eye(4)
+                rotation_matrix = np.eye(4) #identity matrix 
             else:
                 rotation_angle = np.arccos(np.dot(z_axis, orientation))
                 rotation_matrix = trimesh.transformations.rotation_matrix(rotation_angle, rotation_axis)
@@ -201,6 +211,7 @@ def visualize_cones(points, values, cone_params, save_path=None):
 
     inside_points = points[values < 0].cpu().detach().numpy()
     outside_points = points[values > 0].cpu().detach().numpy()
+
     if len(inside_points) > 0:
         inside_points = trimesh.points.PointCloud(inside_points)
         outside_points = trimesh.points.PointCloud(outside_points)
@@ -210,47 +221,27 @@ def visualize_cones(points, values, cone_params, save_path=None):
 
     if save_path is not None:
         scene.export(save_path)
+
     scene.show()
-    return voxel_data
 
 
 def preprocess_voxel_data(voxel_data, target_shape=(64, 64, 64), sigma=1.0):
-    # Normalize the voxel data
-    voxel_data = voxel_data / voxel_data.max()
-
-    # Apply Gaussian smoothing
-    voxel_data = gaussian_filter(voxel_data, sigma=sigma)
-
-    # Resample the voxel data
-    voxel_data = resize(voxel_data, target_shape, mode='constant', anti_aliasing=True)
-
+    voxel_data = voxel_data / voxel_data.max() #normalize the data
+    voxel_data = gaussian_filter(voxel_data, sigma=sigma) #smooth
+    voxel_data = resize(voxel_data, target_shape, mode='constant', anti_aliasing=True) #resample to target shape
     return voxel_data
 
 def visualise_voxels(voxel_data):
-    """
-    Visualize voxel data using Trimesh.
-
-    Args:
-        voxel_data (torch.Tensor or np.ndarray): A 3D boolean tensor/array representing voxel occupancy.
-    """
-    # Convert PyTorch tensor to NumPy array if needed
+    # Convert tensor to NumPy array
     if isinstance(voxel_data, torch.Tensor):
         voxel_data = voxel_data.cpu().numpy()
 
-    # Ensure voxel_data is boolean
-    voxel_data = voxel_data.astype(bool)
+    voxel_data = voxel_data.astype(bool) #make boolean array
+    voxel_grid = trimesh.voxel.VoxelGrid(voxel_data) 
+    mesh = voxel_grid.as_boxes() #convert grid to mesh
 
-    # Create a VoxelGrid from the boolean array
-    voxel_grid = trimesh.voxel.VoxelGrid(voxel_data)
-
-    # Convert voxel grid to a mesh
-    mesh = voxel_grid.as_boxes()
-
-    # Create a scene and add the mesh
     scene = trimesh.Scene()
     scene.add_geometry(mesh)
-
-    # Show the scene
     scene.show()
 
 def calculate_inside_cone_coverage_loss(sdf_points, sdf_values, sphere_params):
@@ -375,9 +366,13 @@ def main():
 
     # model = SphereNet(num_spheres=256).to(device)
     model = ConeNet(num_cones=32).to(device)  # Adjusted num_cones to 256
+    #to change number of cones: 
+    #update num cones in main function 
+    #update num cones in ConeNet class
+
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 
-    num_epochs =15   #change parameter for number of itearations
+    num_epochs = 10   #change parameter for number of itearations
     patience = 20
     for i in range(num_epochs):
         optimizer.zero_grad()
