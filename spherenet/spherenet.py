@@ -50,8 +50,6 @@ def cone_overlap_loss(cone_params):
 def bsmin(a, dim, k=22.0, keepdim=False):
     dmix = -torch.logsumexp(-k * a, dim=dim, keepdim=keepdim) / k
     return dmix
-
-def determine_sphere_sdf(query_points, sphere_params):
     sphere_centers = sphere_params[:, :, :3]
     sphere_radii = sphere_params[:, :, 3]
     vectors_points_to_centers = query_points[:, None, :] - sphere_centers[None, :, :, :]
@@ -107,25 +105,6 @@ class Decoder(nn.Module):
         out2 = self.net2(out1)
         return out2
 
-class SphereNet(nn.Module):
-    def __init__(self, num_spheres=128):
-        super(SphereNet, self).__init__()
-        self.num_spheres = num_spheres
-        self.encoder = DGCNNFeat(global_feat=True)
-        self.decoder = Decoder(256, 512)
-
-    def forward(self, voxel_data, query_points):
-        # Pass the voxel data through the encoder
-        features = self.encoder(voxel_data)
-        sphere_params = self.decoder(features)
-        sphere_params = torch.sigmoid(sphere_params.view(-1, 4))
-        sphere_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1]).to(sphere_params.device)
-        sphere_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.4]).to(sphere_params.device)
-        sphere_params = sphere_params * sphere_multiplier + sphere_adder
-        sphere_sdf = determine_sphere_sdf(query_points, sphere_params)
-        return sphere_sdf, sphere_params
-    
-
 class ConeNet(nn.Module):
     def __init__(self, num_cones=32):  # Adjusted num_cones to 256
         super(ConeNet, self).__init__()
@@ -153,29 +132,6 @@ class ConeNet(nn.Module):
         cone_sdf = determine_cone_sdf(query_points, cone_params)
 
         return cone_sdf, cone_params
-
-def visualise_spheres(points, values, sphere_params, reference_model=None, save_path=None):
-    sphere_params = sphere_params.cpu().detach().numpy()
-    sphere_centers = sphere_params[..., :3]
-    sphere_radii = np.abs(sphere_params[..., 3])
-    scene = trimesh.Scene()
-
-    # Calculate the centroid of the sphere cluster
-    centroid = sphere_centers.mean(axis=0)
-
-    for center, radius in zip(sphere_centers, sphere_radii):
-        sphere = trimesh.creation.icosphere(radius=radius, subdivisions=2)
-        sphere.apply_translation(center)
-        scene.add_geometry(sphere)
-
-    inside_points = points[values < 0]
-    inside_points = trimesh.points.PointCloud(inside_points)
-    inside_points.colors = [0, 0, 255, 255]  # Blue color for inside points
-    scene.add_geometry([inside_points])
-        
-    if save_path is not None:
-        scene.export(save_path)
-    scene.show()
 
 def compute_pca(data):
     # Center the data
