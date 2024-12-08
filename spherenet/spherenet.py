@@ -121,8 +121,8 @@ class ConeNet(nn.Module):
         cone_params = self.decoder(features)
         cone_params = torch.sigmoid(cone_params.view(-1, self.num_cones, 8))
 
-        cone_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1, 0.1, -1.0, -1.0, -1.0]).to(cone_params.device)
-        cone_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.4, 0.4, 2.0, 2.0, 2.0]).to(cone_params.device)
+        cone_adder = torch.tensor([-0.5, -0.5, -0.5, 0.01, 0.01, -1.0, -1.0, -1.0]).to(cone_params.device)
+        cone_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.3, 0.3, 2.0, 2.0, 2.0]).to(cone_params.device)
         cone_params = cone_params * cone_multiplier + cone_adder
 
         # Use the initial centers for the first training iteration
@@ -321,6 +321,21 @@ def calculate_graded_outside_loss(sphere_params, voxel_bounds, buffer=2.0, penal
 
     return outside_loss
 
+def penalize_large_cones(cone_params):
+    """
+    Penalize spheres with large radii to encourage fitting finer features.
+
+    Args:
+        sphere_params (torch.Tensor): Sphere parameters (centers and radii).
+        weight (float): Penalty weight for large spheres.
+
+    Returns:
+        torch.Tensor: Penalty for large radii.
+    """
+    cone_radii = cone_params[:, :, 3]
+    cone_height = cone_params[:, :, 4]
+    return torch.mean(cone_radii ** 2 + cone_height ** 2)  # Penalizes large radii
+
 def main():
     dataset_path = "./data"
     name = "dog"
@@ -391,15 +406,17 @@ def main():
 
         outside_loss = calculate_graded_outside_loss(cone_params, ((0,0,0), (64,64,64)), buffer=0.3, penalty_scale=2.0)
 
+        large_cones_loss = penalize_large_cones(cone_params)
         
         # Bonus: Design additional losses that helps to achieve a better result.
         # mseloss = 0
 
-        loss = mseloss + inside_coverage_loss + 0.5 * overlap_loss + outside_loss
+        loss = mseloss + inside_coverage_loss + 0.5 * overlap_loss + outside_loss + 0.5 * large_cones_loss
         print ("mse loss: ", mseloss.item())
         print ("inside_coverage_loss loss: ", inside_coverage_loss.item())
         print ("overlap_loss loss: ", overlap_loss.item())
         print ("outside_loss loss: ", outside_loss.item())
+        print ("large_cones_loss loss: ", large_cones_loss.item())
 
         loss.backward()
         optimizer.step()
