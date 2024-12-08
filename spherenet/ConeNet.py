@@ -7,24 +7,39 @@ from Decoder import Decoder
 from SDF import determine_cone_sdf
 
 class ConeNet(nn.Module):
-    def __init__(self, num_cones=128):  
+    def __init__(self, num_cones=32):  # Adjusted num_cones to 256
         super(ConeNet, self).__init__()
         self.num_cones = num_cones
         self.encoder = DGCNNFeat(global_feat=True)
-        self.decoder = Decoder(256, 512)  # 8 parameters: center (3), radius (1), height (1), orientation (3)
+        self.decoder = Decoder(in_ch=256, out_ch=num_cones * 8)  # 8 parameters: center (3), radius (1), height (1), orientation (3)
+        self.projection = nn.Linear(256, num_cones*8)  # Projection layer for initial cone centers
 
-    def forward(self, voxel_data, query_points):
+    def forward(self, voxel_data, query_points, initial_centers):
         # Pass the voxel data through the encoder
         features = self.encoder(voxel_data)
         features = features.view(features.size(0), -1)  # Flatten the features
 
         # Decode the features into cone parameters
         cone_params = self.decoder(features)
+
         cone_params = torch.sigmoid(cone_params.view(-1, self.num_cones, 8))
 
-        cone_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1, 0.1, -1.0, -1.0, -1.0]).to(cone_params.device)
-        cone_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.4, 0.4, 2.0, 2.0, 2.0]).to(cone_params.device)
+        # cone_params = self.projection(features)
+        # cone_params = cone_params.view(features.size(0), self.num_cones, 8)  # Reshape to [batch_size, num_cones, 8]
+
+        # cone_params[:, :, 3:5] = torch.relu(cone_params[:, :, 3:5])  # Radius and height
+
+
+        cone_adder = torch.tensor([-0.5, -0.5, -0.5, 0.01, 0.01, -1.0, -1.0, -1.0]).to(cone_params.device)
+        cone_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.03, 0.03, 2.0, 2.0, 2.0]).to(cone_params.device)
         cone_params = cone_params * cone_multiplier + cone_adder
+
+        # Use the initial centers for the first training iteration
+        if self.training:
+            updated_params = torch.cat((initial_centers.unsqueeze(0), cone_params[:, :, 3:]), dim=-1)
+            cone_params = updated_params
+
+            # cone_params[:, :, :3] = initial_centers
 
         cone_sdf = determine_cone_sdf(query_points, cone_params)
 
@@ -60,17 +75,31 @@ def visualize_cones(points, values, cone_params, save_path=None):
             radius = cone_radii[i, j]
             height = cone_heights[i, j]
             orientation = cone_orientations[i, j]
-            
+
             # Ensure radius and height are scalar values
             radius = float(radius)
             height = float(height)
+
+            # Extract points within the region of the cone
+            mask = np.linalg.norm(points.cpu().detach().numpy() - center, axis=1) < radius
+            region_points = points[mask].cpu().detach().numpy()
             
+            # if len(region_points) > 0:
+            #     # Compute the principal direction using PCA
+            #     orientation = compute_pca(region_points)
+            # else:
+            #     # Default orientation along the z-axis if no points are found
+            #     orientation = np.array([0, 0, 1])
+            
+            # Default orientation along the z-axis if no points are found
+            # orientation = np.array([0, 0, 1])
+
             # Normalize the orientation vector
             orientation = orientation / np.linalg.norm(orientation)
-            
+
             # Create the cone
             cone = trimesh.creation.cone(radius=radius, height=height)
-            
+
             # Compute the rotation matrix to align the cone with the orientation vector
             z_axis = np.array([0, 0, 1])
             rotation_axis = np.cross(z_axis, orientation)
@@ -79,18 +108,22 @@ def visualize_cones(points, values, cone_params, save_path=None):
             else:
                 rotation_angle = np.arccos(np.dot(z_axis, orientation))
                 rotation_matrix = trimesh.transformations.rotation_matrix(rotation_angle, rotation_axis)
-            
+
             # Apply the rotation and translation to the cone
             cone.apply_transform(rotation_matrix)
             cone.apply_translation(center)
             scene.add_geometry(cone)
 
     inside_points = points[values < 0].cpu().detach().numpy()
+    outside_points = points[values > 0].cpu().detach().numpy()
     if len(inside_points) > 0:
         inside_points = trimesh.points.PointCloud(inside_points)
+        outside_points = trimesh.points.PointCloud(outside_points)
         inside_points.colors = np.array([[0, 0, 255, 255]] * len(inside_points.vertices))  # Blue color for inside points
+        outside_points.colors = np.array([[0, 255, 255, 255]] * len(outside_points.vertices))  # Blue color for inside points
         scene.add_geometry([inside_points])
-        
+
     if save_path is not None:
         scene.export(save_path)
     scene.show()
+    # return voxel_data

@@ -1,5 +1,5 @@
 import torch
-from SDF import determine_sphere_sdf
+from SDF import determine_sphere_sdf, determine_cone_sdf
 
 def calculate_overlap_loss(sphere_params):
     centers = sphere_params[:, :3]
@@ -160,3 +160,105 @@ def penalize_large_spheres(sphere_params):
     sphere_radii = sphere_params[:, 3]
     return torch.mean(sphere_radii ** 2)  # Penalizes large radii
 
+def cone_overlap_loss(cone_params):
+    batch_size, num_cones, _ = cone_params.shape
+    cone_centers = cone_params[:, :, :3]
+    cone_radii = cone_params[:, :, 3]
+    cone_heights = cone_params[:, :, 4]
+    
+    overlap_loss = 0.0
+    
+    for i in range(num_cones):
+        for j in range(i + 1, num_cones):
+            center_i = cone_centers[:, i, :]
+            center_j = cone_centers[:, j, :]
+            radius_i = cone_radii[:, i]
+            radius_j = cone_radii[:, j]
+            height_i = cone_heights[:, i]
+            height_j = cone_heights[:, j]
+            
+            # Calculate the distance between the centers of the cones
+            distance = torch.norm(center_i - center_j, dim=-1)
+            
+            # Calculate the overlap between the cones
+            overlap = torch.max(torch.tensor(0.0).to(cone_params.device), radius_i + radius_j - distance)
+            
+            # Add the overlap to the total overlap loss
+            overlap_loss += overlap.mean()
+    
+    return overlap_loss / (num_cones * (num_cones - 1) / 2)
+
+def calculate_inside_cone_coverage_loss(sdf_points, sdf_values, sphere_params):
+    """
+    Penalize lack of coverage for inside points of the voxel grid.
+    
+    Args:
+        sdf_points (torch.Tensor): Query points in the voxel grid.
+        sdf_values (torch.Tensor): Ground truth SDF values for the query points.
+        sphere_params (torch.Tensor): Sphere parameters (centers and radii).
+        
+    Returns:
+        torch.Tensor: The inside coverage loss.
+    """
+    # Get inside points (SDF values < 0)
+    inside_mask = sdf_values < 0
+    inside_points = sdf_points[inside_mask]
+    
+    if inside_points.shape[0] == 0:  # No inside points
+        return torch.tensor(0.0, device=sdf_points.device)
+
+    # Calculate SDF for these points w.r.t. spheres
+    sphere_sdf = determine_cone_sdf(inside_points, sphere_params)
+    
+    # Minimum SDF across all spheres for each inside point
+    min_sdf, _ = torch.min(sphere_sdf, dim=1)
+    
+    # Penalize points with SDF > 0 (not covered by spheres)
+    uncovered_loss = torch.mean(torch.relu(min_sdf))  # relu ensures only positive penalties
+    
+    return uncovered_loss
+
+def penalize_large_cones(cone_params):
+    """
+    Penalize spheres with large radii to encourage fitting finer features.
+
+    Args:
+        sphere_params (torch.Tensor): Sphere parameters (centers and radii).
+        weight (float): Penalty weight for large spheres.
+
+    Returns:
+        torch.Tensor: Penalty for large radii.
+    """
+    cone_radii = cone_params[:, :, 3]
+    cone_height = cone_params[:, :, 4]
+    return torch.mean(cone_radii ** 2 + cone_height ** 2)  # Penalizes large radii
+
+def cone_size_diversity_loss(cone_params):
+    radii = cone_params[..., 3]
+    heights = cone_params[..., 4]
+    # Penalize uniform radii and heights
+    return 5 * torch.std(radii) + 5 * torch.std(heights)
+
+def cone_pairwise_difference_loss(cone_params):
+    radii = cone_params[..., 3]
+    heights = cone_params[..., 4]
+    # Pairwise differences between radii and heights
+    radii_diff = torch.cdist(radii.unsqueeze(-1), radii.unsqueeze(-1))
+    heights_diff = torch.cdist(heights.unsqueeze(-1), heights.unsqueeze(-1))
+    # Minimize the inverse of differences (penalize small differences)
+    diversity_loss = 1.0 / (radii_diff + 1e-6).mean() + 1.0 / (heights_diff + 1e-6).mean()
+    return diversity_loss
+
+def combined_fit_loss(combined_sdf, sdf_values):
+    """
+    Penalize the mismatch between the combined SDF and ground truth SDF.
+    """
+
+    print(f"        Combined SDF Shape: {combined_sdf.shape}")
+    print(f"        SDF Values Shape: {sdf_values.shape}")
+
+    reduced_sdf, _ = torch.min(combined_sdf, dim=2)  # Shape: [batch_size, num_points]
+    reduced_sdf = reduced_sdf.squeeze(0)  # Remove batch dimension, shape: [num_points]
+
+    # Compute mean squared error
+    return torch.mean((reduced_sdf - sdf_values) ** 2)

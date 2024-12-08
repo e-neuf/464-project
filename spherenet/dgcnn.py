@@ -21,7 +21,7 @@ class DGCNNFeat(nn.Module):
         # self.bn6 = nn.BatchNorm1d(self.emb_dims)
 
         self.fc = nn.Linear(256, self.emb_dims)
-        
+        # self.fc = nn.Linear(512, self.emb_dims)
 
     def forward(self, x):
         batch_size = x.size(0)
@@ -52,12 +52,12 @@ class DGCNNFeat(nn.Module):
         # x4 = x
 
         if self.global_feat:
-            # x = torch.max(x3, dim=2)[0]  # Global max pooling along depth dimension
-            # x = torch.max(x, dim=2)[0]  # Global max pooling along height dimension
-            # x = torch.max(x, dim=2)[0]  # Global max pooling along width dimension
+            x = torch.max(x3, dim=2)[0]  # Global max pooling along depth dimension
+            x = torch.max(x, dim=2)[0]  # Global max pooling along height dimension
+            x = torch.max(x, dim=2)[0]  # Global max pooling along width dimension
 
-            x = torch.mean(x3, dim=(2, 3, 4))  # Global average pooling
-            x = self.fc(x)
+            # x = torch.mean(x3, dim=(2, 3, 4))  # Global average pooling
+            # x = self.fc(x)
         else:
             x = torch.cat((x1, x2, x3), dim=1)  # Concatenate along channel dimension
 

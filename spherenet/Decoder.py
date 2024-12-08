@@ -1,15 +1,14 @@
 import torch.nn as nn
 
 class Decoder(nn.Module):
-    def __init__(self):
+    def __init__(self, in_ch=256, out_ch=512):
         super(Decoder, self).__init__()
-        in_ch = 256
         feat_ch = 256
-        out_ch = 512
+
         self.net1 = nn.Sequential(
-            nn.utils.weight_norm(nn.Linear(in_ch, feat_ch)),
+            nn.utils.parametrizations.weight_norm(nn.Linear(in_ch, feat_ch)),
             nn.ReLU(inplace=True),
-            nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            nn.utils.parametrizations.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
             # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
             # nn.ReLU(inplace=True),
@@ -17,9 +16,9 @@ class Decoder(nn.Module):
             # nn.ReLU(inplace=True),
         )
         self.net2 = nn.Sequential(
-            nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            nn.utils.parametrizations.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
-            nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            nn.utils.parametrizations.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
             # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
             # nn.ReLU(inplace=True),
@@ -34,4 +33,5 @@ class Decoder(nn.Module):
         out1 = self.net1(z)
         out2 = self.net2(out1)
         return out2
+
 
