@@ -20,34 +20,6 @@ def initialize_cone_centers(voxel_points, values, num_cones, device):
     centers = kmeans.cluster_centers_ 
     return torch.tensor(centers, dtype=torch.float32).to(device) 
 
-def cone_overlap_loss(cone_params):
-    batch_size, num_cones, _ = cone_params.shape    
-    cone_centers = cone_params[:, :, :3] #first 3 values are the center
-    cone_radii = cone_params[:, :, 3] #4th value is the radius
-    cone_heights = cone_params[:, :, 4] #5th value is the height
-    
-    overlap_loss = 0.0
-    
-    for i in range(num_cones):
-        for j in range(i + 1, num_cones):
-            center_i = cone_centers[:, i, :]
-            center_j = cone_centers[:, j, :]
-
-            radius_i = cone_radii[:, i]
-            radius_j = cone_radii[:, j]
-            
-            # Calculate the euclidean distance between the centers of the cones
-            distance = torch.norm(center_i - center_j, dim=-1)
-            
-            # Calculate the overlap between the cones
-            #overalp if sume of radius is greater than distance between centers
-            overlap = torch.max(torch.tensor(0.0).to(cone_params.device), radius_i + radius_j - distance)
-            
-            # Add the overlap to the total overlap loss
-            overlap_loss += overlap.mean()
-    
-    return overlap_loss / (num_cones * (num_cones - 1) / 2) #normalize
-
 def bsmin(a, dim, k=22.0, keepdim=False):
     # soft min of tensor a along dimension dim
     # k is the smoothness parameter
@@ -55,23 +27,65 @@ def bsmin(a, dim, k=22.0, keepdim=False):
     dmix = -torch.logsumexp(-k * a, dim=dim, keepdim=keepdim) / k
     return dmix
 
-def determine_cone_sdf(query_points, cone_params):
-    cone_centers = cone_params[:, :, :3]
-    cone_radii = cone_params[:, :, 3]
-    cone_heights = cone_params[:, :, 4]
-    cone_orientations = cone_params[:, :, 5:8]
-    cone_orientations = F.normalize(cone_orientations, dim=-1)  # normalized orientations (unit vectors)
 
-    #from query point to cone center
+def determine_cone_sdf(query_points, cone_params):
+    # Extract cone parameters
+    cone_centers = cone_params[:, :, :3]  # Cone centers (x, y, z)
+    cone_radii = cone_params[:, :, 3]     # Cone radii
+    cone_heights = cone_params[:, :, 4]   # Cone heights
+    cone_orientations = cone_params[:, :, 5:8]  # Cone orientations (x, y, z)
+    cone_orientations = F.normalize(cone_orientations, dim=-1)  # Normalize orientations to unit vectors
+
+    # Calculate vectors from query points to cone centers
     vectors_points_to_centers = query_points[:, None, :] - cone_centers[None, :, :, :]
-    #euclidean distance from query point to con center in xy plane 
+
+    # Calculate the Euclidean distance from query points to cone centers in the xy plane
     distance_points_to_centers = torch.norm(vectors_points_to_centers[:, :, :, :2], dim=-1)
 
+    # Calculate the SDF for the cones
     cone_sdf = torch.max(
         distance_points_to_centers - cone_radii * (1 - vectors_points_to_centers[:, :, :, 2] / cone_heights),
         torch.abs(vectors_points_to_centers[:, :, :, 2]) - cone_heights
     )
+    
     return cone_sdf
+
+# def determine_cone_sdf(query_points, cone_params):
+#     # Extract cone parameters
+#     cone_centers = cone_params[:, :, :3]  # Cone centers (x, y, z)
+#     cone_radii = cone_params[:, :, 3]     # Base radii
+#     cone_heights = cone_params[:, :, 4]   # Heights
+#     cone_orientations = cone_params[:, :, 5:8]  # Cone orientations (unit vector)
+#     cone_orientations = F.normalize(cone_orientations, dim=-1)  # Ensure orientations are unit vectors
+
+#     # Vectors from query points to cone centers
+#     vectors_points_to_centers = query_points[:, None, :] - cone_centers[None, :, :, :]
+
+#     # Project vectors onto the cone's axis (orientation)
+#     projections_onto_axis = torch.sum(vectors_points_to_centers * cone_orientations[None, :, :, :], dim=-1)
+
+#     # Perpendicular distances to the axis
+#     perpendicular_distances = torch.norm(
+#         vectors_points_to_centers - projections_onto_axis[..., None] * cone_orientations[None, :, :, :],
+#         dim=-1
+#     )
+
+#     # Compute cone surface SDF
+#     normalized_height = projections_onto_axis / cone_heights
+#     normalized_radius = perpendicular_distances / cone_radii
+
+#     # Distance to the slanted surface
+#     slanted_surface_sdf = torch.sqrt(normalized_height ** 2 + normalized_radius ** 2) - 1
+
+#     # Distance to the cap and base planes
+#     cap_sdf = projections_onto_axis - cone_heights
+#     base_sdf = -projections_onto_axis
+
+#     # Combine all components
+#     cone_sdf = torch.max(torch.max(slanted_surface_sdf, base_sdf), cap_sdf)
+
+#     return cone_sdf
+
 
 class Decoder(nn.Module):
     def __init__(self, in_ch, out_ch):
@@ -129,9 +143,9 @@ class ConeNet(nn.Module):
         #sigmoid: squashes the output to be between 0 and 1
 
         #adjusting cone parameters
-        cone_adder = torch.tensor([-0.5, -0.5, -0.5, 0.08, 0.08, -1.0, -1.0, -1.0]).to(cone_params.device)
-        cone_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.3, 0.3, 2.0, 2.0, 2.0]).to(cone_params.device)
-        cone_params = cone_params * cone_multiplier + cone_adder
+        # cone_adder = torch.tensor([-0.5, -0.5, -0.5, 0.08, 0.08, -1.0, -1.0, -1.0]).to(cone_params.device)
+        cone_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.1, 0.1, 1.0, 1.0, 1.0]).to(cone_params.device)
+        cone_params = cone_params * cone_multiplier 
 
         # Use the initial centers for the first training iteration
         if self.training:
@@ -142,6 +156,8 @@ class ConeNet(nn.Module):
         return cone_sdf, cone_params
 
 def compute_pca(data):
+    if data.shape[0] < 2:  # Check if there are fewer than 2 points
+        return np.array([0, 0, 1])  # Default orientation if not enough points
     # Center the data
     data_mean = np.mean(data, axis=0)
     centered_data = data - data_mean
@@ -181,7 +197,7 @@ def visualize_cones(points, values, cone_params, save_path=None):
             mask = np.linalg.norm(points.cpu().detach().numpy() - center, axis=1) < radius
             region_points = points[mask].cpu().detach().numpy()
             
-            if len(region_points) > 0:
+            if len(region_points) > 1:
                 # Compute the principal direction using PCA if points are in region
                 orientation = compute_pca(region_points)
             else:
@@ -226,7 +242,9 @@ def visualize_cones(points, values, cone_params, save_path=None):
 
 
 def preprocess_voxel_data(voxel_data, target_shape=(64, 64, 64), sigma=1.0):
-    voxel_data = voxel_data / voxel_data.max() #normalize the data
+    # voxel_data = voxel_data / voxel_data.max() #normalize the data
+    voxel_data = voxel_data.astype(float) #convert to float
+    voxel_data = (voxel_data - voxel_data.min()) / (voxel_data.max() - voxel_data.min()) #normalize
     voxel_data = gaussian_filter(voxel_data, sigma=sigma) #smooth
     voxel_data = resize(voxel_data, target_shape, mode='constant', anti_aliasing=True) #resample to target shape
     return voxel_data
@@ -327,61 +345,105 @@ def penalize_large_cones(cone_params):
     cone_height = cone_params[:, :, 4]
     return torch.mean(cone_radii ** 2 + cone_height ** 2)  # Penalizes large radii
 
+def cone_overlap_loss(cone_params):
+    batch_size, num_cones, _ = cone_params.shape    
+    cone_centers = cone_params[:, :, :3] #first 3 values are the center
+    cone_radii = cone_params[:, :, 3] #4th value is the radius
+    cone_heights = cone_params[:, :, 4] #5th value is the height
+    
+    overlap_loss = 0.0
+    
+    for i in range(num_cones):
+        for j in range(i + 1, num_cones):
+            center_i = cone_centers[:, i, :]
+            center_j = cone_centers[:, j, :]
+
+            radius_i = cone_radii[:, i]
+            radius_j = cone_radii[:, j]
+            
+            # Calculate the euclidean distance between the centers of the cones
+            distance = torch.norm(center_i - center_j, dim=-1)
+            
+            # Calculate the overlap between the cones
+            #overalp if sume of radius is greater than distance between centers
+            overlap = torch.max(torch.tensor(0.0).to(cone_params.device), radius_i + radius_j - distance)
+            
+            # Add the overlap to the total overlap loss
+            overlap_loss += overlap.mean()
+    
+    return overlap_loss / (num_cones * (num_cones - 1) / 2) #normalize
+
+def height_diversity_loss(cone_params):
+    heights = cone_params[..., 4]  # Extract cone heights
+    mean_height = torch.mean(heights)
+    diversity_loss = torch.mean((heights - mean_height) ** 2)  # Variance of heights
+    return diversity_loss  # Penalize low variance (encourage variety)
+
+def apply_dynamic_scaling(cone_params, epoch, num_epochs):
+    scale_factor = torch.linspace(0.1, 2.0, steps=num_epochs).to(cone_params.device)  # Gradual scaling
+    current_scale = scale_factor[epoch]
+    cone_params = cone_params.clone()  
+    cone_params[..., 4] = cone_params[..., 4] * current_scale  # Safely scale cone heights
+    return cone_params
+
 def main():
     dataset_path = "./data"
-    name = "dog"
+    name = "hand"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load the voxel data from the .npz file
-    data = np.load("reference_models_processed/dog/voxel_and_sdf.npz")
+    data = np.load(f"reference_models_processed/{name}/voxel_and_sdf.npz")
     print(data.files)  # Inspect the contents of the .npz file
 
     voxel_data = data["voxels"]
-    centroid = data["centroid"]
-    scale = data["scale"]
+    # centroid = data["centroid"]
+    # scale = data["scale"]
 
-    # Preprocess the voxel data
     voxel_data = preprocess_voxel_data(voxel_data)
     voxel_data = torch.from_numpy(voxel_data).float().to(device)
-
-    # Convert voxel data to mesh
 
     # Load other necessary data
     points = data["sdf_points"]
     values = data["sdf_values"]
+    # values = values.astype(np.float32)
+    # values = values / np.abs(values).max()  # Normalize SDF values
 
     # visualise_sdf(points, values)
-
     # visualise_voxels(voxel_data)
-
-    # Apply the same transformations to the points
-    # points = (points - centroid) \ scale
+    # points = (points - centroid) / scale
 
     points = torch.from_numpy(points).float().to(device)
-
     values = torch.from_numpy(values).float().to(device)
 
-    initial_centers = initialize_cone_centers(points.cpu().numpy(), values, num_cones=32, device=device)
+    num_cones = 256
+
+    initial_centers = initialize_cone_centers(points.cpu().numpy(), values, num_cones, device=device)
 
     # model = SphereNet(num_spheres=256).to(device)
-    model = ConeNet(num_cones=32).to(device)  # Adjusted num_cones to 256
+    model = ConeNet(num_cones).to(device)  # Adjusted num_cones to 256
     #to change number of cones: 
     #update num cones in main function 
     #update num cones in ConeNet class
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0002)
 
-    num_epochs = 10   #change parameter for number of itearations
-    patience = 20
+
+    print("Voxel data range:", voxel_data.min().item(), voxel_data.max().item())
+    print("Points range:", points.min().item(), points.max().item())
+    print("SDF values range:", values.min().item(), values.max().item())
+    # print("Initial cone parameters:", initial_centers)
+
+    num_epochs = 15   #change parameter for number of itearations
     for i in range(num_epochs):
         optimizer.zero_grad()
         cone_sdf, cone_params = model(
             voxel_data.unsqueeze(0), points, initial_centers
         )
-        # sphere_sdf, sphere_params = model(
-        #     voxel_data.unsqueeze(0), points
-        # )
+
+
+        print("Predicted SDF values:", cone_sdf)
+        print("Ground truth SDF values:", values)
         
         # bsmin approximates the minimum of tensor sphere_sdf along the last dimension,
         # in this case the number of spheres. The function effectively approximates the
@@ -389,49 +451,36 @@ def main():
         # is approximated it can be used for loss calculations which will be used to
         # minimize the difference between predicted and truth SDF’s during training.
         # sphere_sdf = bsmin(sphere_sdf, dim=-1).to(device)
+
+        cone_params = apply_dynamic_scaling(cone_params, i, num_epochs)
+
         cone_sdf = bsmin(cone_sdf, dim=-1).to(device)
 
         # Determine the loss function to train the model, i.e. the mean squared error between gt sdf field and predicted sdf field.
-        # mseloss = torch.mean((sphere_sdf - values) ** 2)
         mseloss = torch.mean((cone_sdf - values) ** 2)
-
         inside_coverage_loss = calculate_inside_cone_coverage_loss(points, values, cone_params)
-
         overlap_loss = cone_overlap_loss(cone_params)
-
         outside_loss = calculate_graded_outside_loss(cone_params, ((0,0,0), (64,64,64)), buffer=0.3, penalty_scale=2.0)
-
         large_cones_loss = penalize_large_cones(cone_params)
-        
-        # Bonus: Design additional losses that helps to achieve a better result.
-        # mseloss = 0
+        height_loss = height_diversity_loss(cone_params)
 
-        loss = mseloss + inside_coverage_loss + 0.5 * overlap_loss + outside_loss + 0.5 * large_cones_loss
+        loss = mseloss + inside_coverage_loss + 0.5 * overlap_loss + outside_loss + 1 * large_cones_loss + 1 * height_loss
         print ("mse loss: ", mseloss.item())
-        print ("inside_coverage_loss loss: ", inside_coverage_loss.item())
-        print ("overlap_loss loss: ", overlap_loss.item())
-        print ("outside_loss loss: ", outside_loss.item())
-        print ("large_cones_loss loss: ", large_cones_loss.item())
+        print ("inside_coverage_loss: ", inside_coverage_loss.item())
+        print ("overlap_loss: ", overlap_loss.item())
+        print ("outside_loss: ", outside_loss.item())
+        print ("large_cones_loss: ", large_cones_loss.item())
+        print ("height_loss : ", height_loss.item())
 
         loss.backward()
         optimizer.step()
         print(f"Iteration {i}, Loss: {loss.item()}\n")
-
-        # if loss < 0.0028:   #modify as needed
-        #     break
         
     output_dir = "./output"
     os.makedirs(output_dir, exist_ok=True)
-    
-    # np.save(os.path.join(output_dir, f"{name}_sphere_params.npy"), sphere_params.cpu().detach().numpy())
     np.save(os.path.join(output_dir, f"{name}_cone_params.npy"), cone_params.cpu().detach().numpy())
-    
-    # print(sphere_params)
-    print(cone_params)
-
-    # visualise_spheres(points, values, sphere_params, save_path=os.path.join(output_dir, f"{name}_spheres.obj"))
+    # print(cone_params)
     visualize_cones(points, values, cone_params, save_path=os.path.join(output_dir, f"{name}_cones.obj"))
-    
     torch.save(model.state_dict(), os.path.join(output_dir, f"{name}_model.pth"))
 
 if __name__ == "__main__":
