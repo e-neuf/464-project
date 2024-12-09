@@ -12,19 +12,60 @@ num_shapes = 10
 def bsmin(a, dim, k=22.0, keepdim=False):
     dmix = -torch.logsumexp(-k * a, dim=dim, keepdim=keepdim) / k
     return dmix
+    
+def determine_cylinder_sdf(query_points, cylinder_params):
+    centers = cylinder_params[:,:3]
+    axes = cylinder_params[:,3:6]
+    radii = cylinder_params[:,6]
+    heights = cylinder_params[:,7]
 
-def determine_sphere_sdf(query_points, sphere_params):
-    sphere_centers = sphere_params[:,:3]
-    sphere_radii = sphere_params[:,3]
-    vectors_points_to_centers = query_points[:, None, :] - sphere_centers[None, :, :]
-    distance_points_to_centers = torch.norm(vectors_points_to_centers, dim=-1)
-    sphere_sdf = distance_points_to_centers - sphere_radii
-    return sphere_sdf
+    num_query_points = query_points.shape[0]
+    num_cylinders = cylinder_params.shape[0]
+    dist_to_cyl = torch.empty((num_query_points, num_cylinders))
+
+    # normalize the axis vector
+    axes_normalized = torch.nn.functional.normalize(axes)
+    
+    for i in range(num_cylinders):
+        # calcualte distance from query points to cylinder axis
+        scalar_points = torch.linalg.vecdot(query_points - centers[i,:], axes_normalized[i,:])
+        projection = scalar_points[:, np.newaxis] * axes_normalized[i,:]
+        closest_points = centers[i,:] + projection
+        dist_to_axis = torch.linalg.vector_norm(query_points - closest_points, dim=1)
+        point_is_within_radius = torch.le(dist_to_axis, radii[i])
+        #print("num of points within the radius: "+str(torch.count_nonzero(point_is_within_radius)))
+
+        # calcuate the points on the top and the bottom of the cylinder axis
+        interm = (heights[i]/2) / torch.linalg.vector_norm(axes[i,:])
+        top = centers[i,:] + interm * axes[i,:] 
+        bottom = centers[i,:] - interm * axes[i,:]
+
+        # calculate distance from query points to cylinder top/bottom
+        dist_to_top = torch.linalg.vector_norm(projection - top, dim=1)
+        dist_to_bottom = torch.linalg.vector_norm(projection - bottom, dim=1)
+        dist_to_height = torch.minimum(dist_to_top, dist_to_bottom)
+        point_is_within_height = torch.le((dist_to_top + dist_to_bottom), heights[i])
+        #print("num of points within the height: "+str(torch.count_nonzero(point_is_within_height)))
+
+        # use the appropriate distance for each query point
+        point_is_inside = point_is_within_height & point_is_within_radius
+        #print("num of points inside: "+str(torch.count_nonzero(point_is_inside)))
+        #point_is_within_one = point_is_within_height ^ point_is_within_radius
+        point_is_within_none = ~(point_is_within_height | point_is_within_radius)
+        #print("num of points within none: "+str(torch.count_nonzero(point_is_within_none)))
+
+        dist_to_cyl[point_is_within_height,i] = dist_to_axis[point_is_within_height]
+        dist_to_cyl[point_is_within_radius,i] = dist_to_height[point_is_within_radius]
+        inside = -1 * torch.minimum(torch.abs(dist_to_axis - radii[i]), dist_to_height)
+        dist_to_cyl[point_is_inside,i] = inside[point_is_inside]
+        dist_to_cyl[point_is_within_none,i] = torch.sqrt(dist_to_axis[point_is_within_none]**2 + dist_to_height[point_is_within_none]**2)
+    
+    return dist_to_cyl
 
 class Decoder(nn.Module):
     def __init__(self):
         super(Decoder, self).__init__()
-        in_ch = 512
+        in_ch = 256
         feat_ch = 512
         out_ch = num_shapes * 8
         self.net1 = nn.Sequential(
@@ -56,59 +97,52 @@ class Decoder(nn.Module):
         out2 = self.net2(out1)
         return out2
 
-class SphereNet(nn.Module):
-    def __init__(self, num_spheres=num_shapes):
-        super(SphereNet, self).__init__()
-        self.num_spheres = num_spheres
+class CylinderNet(nn.Module):
+    def __init__(self, num_cylinders=num_shapes):
+        super(CylinderNet, self).__init__()
+        self.num_cylinders = num_cylinders
         self.encoder = DGCNNFeat(global_feat=True)
         self.decoder = Decoder()
 
     def forward(self, voxel_data, query_points):
         # Pass the voxel data through the encoder
         features = self.encoder(voxel_data)
-        sphere_params = self.decoder(features)
-        sphere_params = torch.sigmoid(sphere_params.view(-1, 8))
+        cylinder_params = self.decoder(features)
+        cylinder_params = torch.sigmoid(cylinder_params.view(-1, 8))
         #sphere_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1]).to(sphere_params.device)
         #sphere_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.4]).to(sphere_params.device)
-        sphere_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1, 0.1, 0.1, 0.1, 0.1]).to(sphere_params.device)
-        sphere_multiplier = torch.tensor([1.0, 1.0, 1.0,1.0, 1.0, 1.0, 0.4, 0.4]).to(sphere_params.device)
-        sphere_params = sphere_params * sphere_multiplier + sphere_adder
-        sphere_sdf = determine_sphere_sdf(query_points, sphere_params)
-        return sphere_sdf, sphere_params
+        # extra adder and multiplier values chosen at semi-random
+        cylinder_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1, 0.1, 0.1, 0.1, 0.1]).to(cylinder_params.device)
+        cylinder_multiplier = torch.tensor([1.0, 1.0, 1.0,1.0, 1.0, 1.0, 0.4, 0.4]).to(cylinder_params.device)
+        cylinder_params = cylinder_params * cylinder_multiplier + cylinder_adder
+        cylinder_sdf = determine_cylinder_sdf(query_points, cylinder_params)
+        return cylinder_sdf, cylinder_params
 
-def visualise_spheres(points, values, sphere_params, reference_model=None, save_path=None):
-    sphere_params = sphere_params.cpu().detach().numpy()
-    sphere_centers = sphere_params[..., :3]
-    sphere_radii = np.abs(sphere_params[..., 3])
-    scene = trimesh.Scene()
+def visualize_cylinders(scene, cylinder_params, reference_model=None, save_path=None):
+    cylinder_params = cylinder_params.cpu().detach().numpy()
+    cylinder_centers = cylinder_params[..., :3]
+    cylinder_axes = cylinder_params[..., 3:6]
+    cylinder_radii = cylinder_params[..., 6]
+    cylinder_heights = cylinder_params[..., 7]
 
-    # Calculate the centroid of the sphere cluster
-    centroid = sphere_centers.mean(axis=0)
-
-    for center, radius in zip(sphere_centers, sphere_radii):
-        sphere = trimesh.creation.icosphere(radius=radius, subdivisions=2)
-        sphere.apply_translation(center)
-        scene.add_geometry(sphere)
-
-    inside_points = points[values < 0]
-    inside_points = trimesh.points.PointCloud(inside_points)
-    inside_points.colors = [0, 0, 255, 255]  # Blue color for inside points
-    scene.add_geometry([inside_points])
+    for i in range(cylinder_params.shape[0]):
+        cyl = trimesh.creation.cylinder(cylinder_heights[i], cylinder_radii[i])
+        # cyl.apply transformation()
+        cyl.apply_translation(cylinder_centers[i])
+        scene.add_geometry(cyl)
         
     if save_path is not None:
         scene.export(save_path)
-    scene.show()
 
-def visualise_sdf(points, values):
+def visualise_sdf(scene, points, values):
     inside_points = points[values < 0]
     outside_points = points[values > 0]
-    inside_points = trimesh.points.PointCloud(inside_points)
-    outside_points = trimesh.points.PointCloud(outside_points)
-    inside_points.colors = [0, 0, 255, 255]  # Blue color for inside points
-    outside_points.colors = [255, 0, 0, 255]  # Red color for outside points
-    scene = trimesh.Scene()
-    scene.add_geometry([inside_points, outside_points])
-    scene.show()
+    if len(inside_points) > 0:
+        inside_points = trimesh.points.PointCloud(inside_points)
+        outside_points = trimesh.points.PointCloud(outside_points)
+        inside_points.colors = np.array([[0, 0, 255, 255]] * len(inside_points.vertices))  # Blue color for inside points
+        outside_points.colors = np.array([[0, 255, 255, 255]] * len(outside_points.vertices))  # Red color for outside points
+        scene.add_geometry([inside_points, outside_points])
 
 def voxel_to_mesh(voxel_data):
     # Convert voxel data to a mesh representation
@@ -155,45 +189,6 @@ def visualise_voxels(voxel_data):
     # Show the scene
     scene.show()
 
-# taken from task 2 of the assignment
-def create_cylinder_mesh(center, direction, radius, height, color=[0, 1, 0]):
-    """
-    Create a cylinder mesh in trimesh centered at `center` and aligned to `direction`.
-
-    Args:
-        center (np.ndarray): The center point of the cylinder.
-        direction (np.ndarray): A vector indicating the cylinder's orientation.
-        radius (float): The radius of the cylinder.
-        height (float): The height of the cylinder.
-        color (list): RGB color of the cylinder.
-
-    Returns:
-        trimesh.Trimesh: A trimesh object representing the cylinder.
-    """
-    # Create a cylinder aligned with the Z-axis
-    cylinder = trimesh.creation.cylinder(radius=radius, height=height, sections=32)
-
-    # Normalize the direction vector
-    direction = np.array(direction)
-    direction /= np.linalg.norm(direction)
-
-    # Compute the rotation matrix to align the cylinder's Z-axis with the given direction vector
-    z_axis = np.array([0, 0, 1])  # The default axis of the cylinder
-    rotation_matrix = trimesh.geometry.align_vectors(z_axis, direction)
-
-    # Apply rotation to the cylinder
-    cylinder.apply_transform(rotation_matrix)
-
-    # Translate the cylinder to the desired center position
-    cylinder.apply_translation(center)
-
-    # Apply color to the cylinder mesh
-    cylinder.visual.face_colors = np.array(color + [1.0]) * 255  # Color the mesh faces
-
-    return cylinder
-
-
-
 def main():
     dataset_path = "./reference_models_processed"
     name = "dog"
@@ -206,15 +201,15 @@ def main():
     #print(data.files)  # Inspect the contents of the .npz file
 
     voxel_data = data["voxels"]
-    centroid = data["centroid"]
-    scale = data["scale"]
+    #centroid = data["centroid"]
+    #scale = data["scale"]
 
     # Preprocess the voxel data
     voxel_data = preprocess_voxel_data(voxel_data)
     voxel_data = torch.from_numpy(voxel_data).float().to(device)
 
     # Convert voxel data to mesh
-    reference_model = voxel_to_mesh(voxel_data)
+    #reference_model = voxel_to_mesh(voxel_data)
 
     # Load other necessary data
     points = data["sdf_points"]
@@ -229,7 +224,7 @@ def main():
     points = torch.from_numpy(points).float().to(device)
     values = torch.from_numpy(values).float().to(device)
 
-    model = SphereNet(num_spheres=num_shapes).to(device)
+    model = CylinderNet(num_cylinders=num_shapes).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 
     num_epochs = 10   #change parameter for number of itearations
@@ -255,20 +250,9 @@ def main():
     
     #print(cylinder_params)
 
-    #visualise_spheres(sphere_params, reference_model=None, save_path=os.path.join(output_dir, f"{name}_spheres.obj"))
-
-    # modified from task 2 of the assignment to visualize the cylinders as meshes
-
-    cylinders = []
-    for i in range(num_shapes):
-        cylinder_center, cylinder_axis, cylinder_radius, cylinder_height = (
-            cylinder_params[i][0:3].detach().numpy(),
-            cylinder_params[i][3:6].detach().numpy(),
-            cylinder_params[i][6].detach().numpy(),
-            cylinder_params[i][7].detach().numpy() ) # cylinder params row has 8 things in it
-        cylinders.append(create_cylinder_mesh(
-            cylinder_center, cylinder_axis, cylinder_radius, height=cylinder_height ))
-    scene = trimesh.Scene(cylinders)
+    scene = trimesh.Scene()
+    visualize_cylinders(scene, cylinder_params)
+    #visualise_sdf(scene, points, cylinder_sdf)
     scene.show()
 
     torch.save(model.state_dict(), os.path.join(output_dir, f"{name}_model.pth"))
