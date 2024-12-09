@@ -72,23 +72,23 @@ class Decoder(nn.Module):
         feat_ch = 256
 
         self.net1 = nn.Sequential(
-            nn.utils.weight_norm(nn.Linear(in_ch, feat_ch)),
+            nn.utils.parametrizations.weight_norm(nn.Linear(in_ch, feat_ch)),
             nn.ReLU(inplace=True),
-            nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            nn.utils.parametrizations.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
-            # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            # nn.utils.parametrizations.weight_norm(nn.Linear(feat_ch, feat_ch)),
             # nn.ReLU(inplace=True),
-            # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            # nn.utils.parametrizations.weight_norm(nn.Linear(feat_ch, feat_ch)),
             # nn.ReLU(inplace=True),
         )
         self.net2 = nn.Sequential(
-            nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            nn.utils.parametrizations.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
-            nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            nn.utils.parametrizations.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
-            # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            # nn.utils.parametrizations.weight_norm(nn.Linear(feat_ch, feat_ch)),
             # nn.ReLU(inplace=True),
-            # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            # nn.utils.parametrizations.weight_norm(nn.Linear(feat_ch, feat_ch)),
             # nn.ReLU(inplace=True),
             nn.Linear(feat_ch, out_ch),
         )
@@ -257,6 +257,71 @@ def calculate_huber_loss(predictions, targets, delta=1.0):
     loss = quadratic + linear
     return torch.mean(loss)
 
+def calculate_inside_coverage_loss_cylinders(sdf_points, sdf_values, cylinder_params, cylinder_sdf):
+    """
+    Penalize lack of coverage for inside points of the voxel grid.
+    
+    Args:
+        sdf_points (torch.Tensor): Query points in the voxel grid.
+        sdf_values (torch.Tensor): Ground truth SDF values for the query points.
+        cylinder_params (torch.Tensor): Cylinder parameters (centers, axes, radii, and heights).
+        
+    Returns:
+        torch.Tensor: The inside coverage loss.
+    """
+    # Get inside points (SDF values < 0)
+    inside_mask = sdf_values < 0
+    inside_points = sdf_points[inside_mask]
+    
+    if inside_points.shape[0] == 0:  # No inside points
+        return torch.tensor(0.0, device=sdf_points.device)
+    
+    # Minimum SDF across all cylinders for each inside point
+    min_sdf, _ = torch.min(cylinder_sdf[inside_mask], dim=1)
+    
+    # Penalize points with SDF > 0 (not covered by cylinders)
+    uncovered_loss = torch.mean(torch.relu(min_sdf))  # relu ensures only positive penalties
+    
+    return uncovered_loss
+
+def calculate_graded_outside_loss(cylinder_params, voxel_bounds, buffer=2.0, penalty_scale=2.0):
+    """
+    Penalize cylinders that extend outside the voxel volume with graded penalties.
+
+    Args:
+        cylinder_params (torch.Tensor): Cylinder parameters (centers, axes, radii, and heights).
+        voxel_bounds (tuple): Min and max bounds of the voxel grid as ((xmin, ymin, zmin), (xmax, ymax, zmax)).
+        buffer (float): Allowable extension beyond the bounds without penalty.
+        penalty_scale (float): Scale factor for the penalty.
+
+    Returns:
+        torch.Tensor: The graded outside loss.
+    """
+    cylinder_centers = cylinder_params[:, :3]
+    cylinder_radii = cylinder_params[:, 6]
+    
+    # Voxel bounds
+    (xmin, ymin, zmin), (xmax, ymax, zmax) = voxel_bounds
+
+    # Compute distances outside the bounds
+    outside_xmin = torch.clamp(xmin - (cylinder_centers[:, 0] - cylinder_radii) - buffer, min=0)
+    outside_ymin = torch.clamp(ymin - (cylinder_centers[:, 1] - cylinder_radii) - buffer, min=0)
+    outside_zmin = torch.clamp(zmin - (cylinder_centers[:, 2] - cylinder_radii) - buffer, min=0)
+
+    outside_xmax = torch.clamp((cylinder_centers[:, 0] + cylinder_radii) - xmax - buffer, min=0)
+    outside_ymax = torch.clamp((cylinder_centers[:, 1] + cylinder_radii) - ymax - buffer, min=0)
+    outside_zmax = torch.clamp((cylinder_centers[:, 2] + cylinder_radii) - zmax - buffer, min=0)
+
+    # Apply a graded penalty (quadratic penalty for now)
+    penalty_x = outside_xmin ** 2 + outside_xmax ** 2
+    penalty_y = outside_ymin ** 2 + outside_ymax ** 2
+    penalty_z = outside_zmin ** 2 + outside_zmax ** 2
+
+    # Combine penalties and scale
+    outside_loss = penalty_scale * torch.mean(penalty_x + penalty_y + penalty_z)
+
+    return outside_loss
+
 def main():
     dataset_path = "./reference_models_processed"
     name = "dog"
@@ -292,10 +357,10 @@ def main():
     points = torch.from_numpy(points).float().to(device)
     values = torch.from_numpy(values).float().to(device)
 
-    model = CylinderNet(num_cylinders=32).to(device)
+    model = CylinderNet(num_cylinders=256).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 
-    num_epochs = 50   # change parameter for number of itearations
+    num_epochs = 100   # change parameter for number of itearations
     prev_loss = 0
     start_time = time.time()
     for i in range(num_epochs):
@@ -303,10 +368,15 @@ def main():
         cylinder_sdf, cylinder_params = model(
             voxel_data.unsqueeze(0), points )
         
-        cylinder_sdf = bsmin(cylinder_sdf, dim=-1).to(device)
+        cylinder_sdf_bsm = bsmin(cylinder_sdf, dim=-1).to(device)
         #loss = nn.MSELoss()(cylinder_sdf, values)
         #loss = penalize_large_cylinders(cylinder_params) # took a rlly long time to run
-        loss = calculate_huber_loss(cylinder_sdf, values)
+        #loss = calculate_huber_loss(cylinder_sdf, values)
+        #loss = nn.HuberLoss()(cylinder_sdf, values)
+        loss = nn.MSELoss()(cylinder_sdf_bsm, values)
+        + 0.5 * calculate_inside_coverage_loss_cylinders(points, values, cylinder_params, cylinder_sdf)
+        + 0.5 * calculate_graded_outside_loss(cylinder_params, ((0,0,0), (64,64,64)), buffer=0.3)
+        + 0.4 * penalize_large_cylinders(cylinder_params)
         loss.backward()
         optimizer.step()
         print(f"Iteration {i}, Loss: {loss.item()}")
