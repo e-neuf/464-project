@@ -1,0 +1,7 @@
+06
+
+256 cyls
+100 epochs
+build in huber loss
+2707 sec
+final loss: 0.00283

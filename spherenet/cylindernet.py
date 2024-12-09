@@ -369,14 +369,16 @@ def main():
             voxel_data.unsqueeze(0), points )
         
         cylinder_sdf_bsm = bsmin(cylinder_sdf, dim=-1).to(device)
-        #loss = nn.MSELoss()(cylinder_sdf, values)
+        #loss = nn.MSELoss()(cylinder_sdf_bsm, values)
         #loss = penalize_large_cylinders(cylinder_params) # took a rlly long time to run
-        #loss = calculate_huber_loss(cylinder_sdf, values)
-        #loss = nn.HuberLoss()(cylinder_sdf, values)
+        #loss = calculate_huber_loss(cylinder_sdf_bsm, values)
+        loss = nn.HuberLoss()(cylinder_sdf_bsm, values)
+        """
         loss = nn.MSELoss()(cylinder_sdf_bsm, values)
         + 0.5 * calculate_inside_coverage_loss_cylinders(points, values, cylinder_params, cylinder_sdf)
         + 0.5 * calculate_graded_outside_loss(cylinder_params, ((0,0,0), (64,64,64)), buffer=0.3)
         + 0.4 * penalize_large_cylinders(cylinder_params)
+        """
         loss.backward()
         optimizer.step()
         print(f"Iteration {i}, Loss: {loss.item()}")
