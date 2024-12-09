@@ -66,6 +66,36 @@ def determine_cylinder_sdf(query_points, cylinder_params):
     
     return dist_to_cyl
 
+def determine_cylinder_sdf_2(query_points, cylinder_params):
+    # https://iquilezles.org/articles/distfunctions/
+
+    centers = cylinder_params[:,:3]
+    axes = cylinder_params[:,3:6]
+    radii = cylinder_params[:,6]
+    heights = cylinder_params[:,7]
+
+    num_query_points = query_points.shape[0]
+    num_cylinders = cylinder_params.shape[0]
+    dist_to_cyl = torch.empty((num_query_points, num_cylinders))
+
+    for i in range(num_cylinders):
+        # calcuate the points on the top and the bottom of the cylinder axis
+        interm = (heights[i]/2) / torch.linalg.vector_norm(axes[i,:])
+        a = centers[i,:] + interm * axes[i,:] 
+        b = centers[i,:] - interm * axes[i,:]
+
+        ba = b - a
+        pa = query_points - a
+        baba = torch.linalg.vecdot(ba, ba)
+        paba = torch.linalg.vecdot(pa, ba) # check if it works w dims
+        x = torch.linalg.vector_norm(pa * baba - ba * paba) - radii[i] * baba
+        y = torch.abs(paba - baba * 0.5) - baba * 0.5
+        x2 = x*x
+        y2 = y*y
+        d = 0
+        # float d = (max(x,y)<0.0)?-min(x2,y2):(((x>0.0)?x2:0.0)+((y>0.0)?y2:0.0));
+        dist_to_cyl[:,i] = torch.sign(d) * torch.sqrt(torch.abs(d)) / baba
+
 class Decoder(nn.Module):
     def __init__(self, in_ch=256, out_ch=512):
         super(Decoder, self).__init__()
