@@ -12,12 +12,14 @@ class CylinderNet(nn.Module):
         self.num_cylinders = num_cylinders
         self.encoder = DGCNNFeat(global_feat=True)
         self.decoder = Decoder()
+        self.feature_mapper = nn.Linear(512, num_cylinders * 8)
 
     def forward(self, voxel_data, query_points):
         # Pass the voxel data through the encoder
         features = self.encoder(voxel_data)
         # Decode the features into cylinder parameters
         cylinder_params = self.decoder(features)
+        cylinder_params = self.feature_mapper(cylinder_params).view(self.num_cylinders, 8)
 
         cylinder_params = torch.sigmoid(cylinder_params.view(-1, 8))
         cylinder_adder = torch.tensor([-0.5, -0.5, -0.5, -0.5, -0.5, -0.5, 0.1, 0.1]).to(cylinder_params.device)
