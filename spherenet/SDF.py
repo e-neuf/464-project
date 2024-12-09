@@ -43,7 +43,7 @@ def determine_cylinder_sdf(query_points, cylinder_params):
     
     for i in range(num_cylinders):
         # calcualte distance from query points to cylinder axis
-        scalar_points = torch.linalg.vecdot(query_points - centers[i,:], axes_normalized[i,:])
+        scalar_points = torch.linalg.vecdot(query_points - centers[i,:], axes_normalized[i,:] - centers[i,:])
         projection = scalar_points[:, np.newaxis] * axes_normalized[i,:]
         closest_points = centers[i,:] + projection
         dist_to_axis = torch.linalg.vector_norm(query_points - closest_points, dim=1)
