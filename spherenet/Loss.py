@@ -220,14 +220,14 @@ def calculate_inside_cone_coverage_loss(sdf_points, sdf_values, sphere_params):
 
 def penalize_large_cones(cone_params):
     """
-    Penalize spheres with large radii to encourage fitting finer features.
+    Penalize cones with large radii and height to encourage fitting finer features.
 
     Args:
-        sphere_params (torch.Tensor): Sphere parameters (centers and radii).
-        weight (float): Penalty weight for large spheres.
+        cone_params (torch.Tensor): Cone parameters (centers and radii).
+        weight (float): Penalty weight for large cones.
 
     Returns:
-        torch.Tensor: Penalty for large radii.
+        torch.Tensor: Penalty for large radii and height.
     """
     cone_radii = cone_params[:, :, 3]
     cone_height = cone_params[:, :, 4]
@@ -262,3 +262,19 @@ def combined_fit_loss(combined_sdf, sdf_values):
 
     # Compute mean squared error
     return torch.mean((reduced_sdf - sdf_values) ** 2)
+
+
+# cylinder loss functions
+def penalize_large_cylinders(cylinder_params):
+    """
+    Penalize cylinders with large radii and height to encourage fitting finer features.
+
+    Args:
+        cylinder_params (torch.Tensor): Cylinder parameters (centers, axes, radii, and height).
+
+    Returns:
+        torch.Tensor: Penalty for large radii and height.
+    """
+    cylinder_radii = cylinder_params[:,6]
+    cylinder_height = cylinder_params[:,7]
+    return torch.mean(cylinder_radii ** 2 + cylinder_height ** 2)
