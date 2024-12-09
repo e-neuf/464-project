@@ -6,9 +6,9 @@ class Decoder(nn.Module):
         feat_ch = 256
 
         self.net1 = nn.Sequential(
-            nn.utils.parametrizations.weight_norm(nn.Linear(in_ch, feat_ch)),
+            nn.utils.weight_norm(nn.Linear(in_ch, feat_ch)),
             nn.ReLU(inplace=True),
-            nn.utils.parametrizations.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
             # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
             # nn.ReLU(inplace=True),
@@ -16,9 +16,9 @@ class Decoder(nn.Module):
             # nn.ReLU(inplace=True),
         )
         self.net2 = nn.Sequential(
-            nn.utils.parametrizations.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
-            nn.utils.parametrizations.weight_norm(nn.Linear(feat_ch, feat_ch)),
+            nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
             # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
             # nn.ReLU(inplace=True),
