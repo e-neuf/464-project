@@ -5,7 +5,7 @@ import os
 import trimesh
 from scipy.ndimage import gaussian_filter
 from skimage.transform import resize
-from Loss import calculate_coverage_loss, calculate_huber_loss, calculate_inside_coverage_loss, calculate_graded_outside_loss, calculate_size_diversity_loss, penalize_large_spheres, calculate_inside_cone_coverage_loss, cone_overlap_loss, penalize_large_cones, calculate_overlap_loss, cone_size_diversity_loss, cone_pairwise_difference_loss, cone_overlap_loss, combined_fit_loss
+from Loss import calculate_coverage_loss, calculate_huber_loss, calculate_inside_coverage_loss, calculate_graded_outside_loss, calculate_size_diversity_loss, penalize_large_spheres, calculate_inside_cone_coverage_loss, cone_overlap_loss, penalize_large_cones, calculate_overlap_loss, cone_size_diversity_loss, cone_pairwise_difference_loss, cone_overlap_loss, combined_fit_loss,calculate_graded_outside_loss_cone,height_diversity_loss, calculate_graded_outside_loss_cone_sdf
 from ConeNet import ConeNet, visualize_cones
 from SphereNet import SphereNet, visualise_spheres
 from sklearn.cluster import KMeans
@@ -13,13 +13,14 @@ from SDF import determine_cone_sdf, determine_sphere_sdf
 from MetaNet import MetaNet
 import torch.nn.functional as F
 import random
+import time
 
 
 def bsmin(a, dim, k=22.0, keepdim=False):
     dmix = -torch.logsumexp(-k * a, dim=dim, keepdim=keepdim) / k
     return dmix
 
-def visualize_primitives(sphere_params, cone_params, save_path=None):
+def visualize_primitives(points, values, sphere_params, cone_params, save_path=None):
     """
     Visualize spheres and cones using Trimesh.
     
@@ -54,8 +55,8 @@ def visualize_primitives(sphere_params, cone_params, save_path=None):
             sphere = trimesh.creation.icosphere(radius=abs(radius), subdivisions=3)
             sphere.apply_translation(center)
 
-            colour = [255,0,0,50]
-            sphere.visual.face_colors = colour
+            # colour = [255,0,0,255]
+            # sphere.visual.face_colors = colour
 
             scene.add_geometry(sphere)
         except Exception as e:
@@ -89,12 +90,17 @@ def visualize_primitives(sphere_params, cone_params, save_path=None):
             # Translate cone to its center
             cone.apply_translation(center)
 
-            color = [0, 0, 255, 150]
-            cone.visual.face_colors = color
+            # color = [0, 0, 255, 255]
+            # cone.visual.face_colors = color
 
             scene.add_geometry(cone)
         except Exception as e:
             print(f"Error creating cone {i} with center={center}, radius={radius}, height={height}, orientation={orientation}: {e}")
+
+    inside_points = points[values < 0]
+    inside_points = trimesh.points.PointCloud(inside_points)
+    inside_points.colors = [0, 0, 255, 255]  # Blue color for inside points
+    scene.add_geometry([inside_points])
 
     # Show the scene interactively
     if save_path is None:
@@ -160,14 +166,6 @@ def visualise_voxels(voxel_data):
 
     # Show the scene
     scene.show()
-
-def initialize_cone_centers(voxel_points, values, num_cones, device):
-    kmeans = KMeans(n_clusters=num_cones)
-
-    voxel_points = voxel_points[values < 0]
-    kmeans.fit(voxel_points)
-    centers = kmeans.cluster_centers_
-    return torch.tensor(centers, dtype=torch.float32).to(device)
 
 def visualize_cones_small(points, values, cone_params, save_path=None):
     """
@@ -257,13 +255,13 @@ def run_spherenet(sphere_optimizer, sphere_model, voxel_data, points, values, de
 
         # huber_loss = calculate_huber_loss(sphere_sdf, values, delta=0.3)
 
-        inside_coverage_loss = calculate_inside_coverage_loss(points, values, sphere_params)
+        # inside_coverage_loss = calculate_inside_coverage_loss(points, values, sphere_params)
 
-        outside_loss = calculate_graded_outside_loss(sphere_params, ((0,0,0), (64,64,64)), buffer=0.3, penalty_scale=2.0)
+        # outside_loss = calculate_graded_outside_loss(sphere_params, ((0,0,0), (64,64,64)), buffer=0.3, penalty_scale=2.0)
 
-        large_sphere_penalty = penalize_large_spheres(sphere_params)
+        # large_sphere_penalty = penalize_large_spheres(sphere_params)
 
-        # print(f"    Sphere MSL loss: {sphere_mseloss.item()}")
+        print(f"    Sphere MSL loss: {sphere_mseloss.item()}")
         # print(f"    Combined coverage loss: {combined_coverage_loss_number.item()}")
         # print(f"    Combined overlap loss: {combined_overlap_loss_number.item()}")
         # print(f"    Inside coverage loss: {inside_coverage_loss.item()}")
@@ -274,7 +272,8 @@ def run_spherenet(sphere_optimizer, sphere_model, voxel_data, points, values, de
         # print(f"Coverage loss: {coverage_loss.item()}")
         # print(f"Overlap loss: {overlap_loss.item()}")
 
-        loss = sphere_mseloss + 0.5*inside_coverage_loss + 0.5*outside_loss + 0.4*large_sphere_penalty
+        # loss = sphere_mseloss + 0.5*inside_coverage_loss + 0.5*outside_loss + 0.4*large_sphere_penalty
+        loss = sphere_mseloss
         
         loss.backward(retain_graph=True)
         sphere_optimizer.step()
@@ -282,10 +281,10 @@ def run_spherenet(sphere_optimizer, sphere_model, voxel_data, points, values, de
 
         return sphere_params
 
-def run_conenet(optimizer, model, voxel_data, points, values, device, i, initial_centers):
+def run_conenet(optimizer, model, voxel_data, points, values, device, i, num_epochs):
     optimizer.zero_grad()
     cone_sdf, cone_params = model(
-        voxel_data.unsqueeze(0), points, initial_centers
+        voxel_data.unsqueeze(0), points
     )
     
     cone_sdf = bsmin(cone_sdf, dim=-1).to(device)
@@ -294,87 +293,52 @@ def run_conenet(optimizer, model, voxel_data, points, values, device, i, initial
 
     inside_coverage_loss = calculate_inside_cone_coverage_loss(points, values, cone_params)
 
+    outside_loss = calculate_graded_outside_loss_cone_sdf(cone_params, points, values, penalty_scale=2.0)
+
+    huber_loss = calculate_huber_loss(cone_sdf, values, delta=0.3)
+
+
+    # large_cone_penalty = penalize_large_cones(cone_params)
+
     # overlap_loss = cone_overlap_loss(cone_params)
 
-    outside_loss = calculate_graded_outside_loss(cone_params, ((0,0,0), (64,64,64)), buffer=0.3, penalty_scale=2.0)
+    # diversity_loss = cone_size_diversity_loss(cone_params)
 
-    large_cones_loss = penalize_large_cones(cone_params)
+    # rotation_loss = compute_cone_rotation_loss(points, cone_params)
 
-    diversity_loss = cone_size_diversity_loss(cone_params)
+    loss = mseloss
+    loss += (0.5 * inside_coverage_loss)
+    loss += (0.5 * outside_loss)
+    loss += (0.5 * huber_loss)
+    # loss += 0.2 * large_cone_penalty
+    # loss += (0.1 * overlap_loss)
+    # loss += 0.1 * diversity_loss
+    # loss += 0.1 * rotation_loss      
 
-    # pairwise_loss = cone_pairwise_difference_loss(cone_params)
-    
-    # Bonus: Design additional losses that helps to achieve a better result.
-    # mseloss = 0
-    # 0.5 * overlap_loss + 0.5 * inside_coverage_loss + 0.5 * outside_loss + 0.4 * large_cones_loss
-    # loss = mseloss + 0.5 * diversity_loss + 0.4 * large_cones_loss
-    loss = mseloss + diversity_loss + 0.5*inside_coverage_loss + outside_loss + 0.5*large_cones_loss
-    # print ("    mse loss: ", mseloss.item())
-    # print ("    inside_coverage_loss loss: ", inside_coverage_loss.item())
-    # print ("    overlap_loss loss: ", overlap_loss.item())
-    # print ("    outside_loss loss: ", outside_loss.item())
-    # print ("    large_cones_loss loss: ", large_cones_loss.item())
-    # print ("    diversity_loss loss: ", diversity_loss.item())
-    # print ("    pairwise_loss loss: ", pairwise_loss.item())
+    print ("    mse loss: ", mseloss.item())
+    print ("    inside_coverage_loss: ", inside_coverage_loss.item())
+    # print ("    overlap_loss: ", overlap_loss.item())
+    print ("    outside_loss: ", outside_loss.item())
+    # print ("    large_cones_loss: ", large_cones_loss.item())
+    # print ("    height_loss : ", height_loss.item())
+    # print ("    rotation_loss : ", rotation_loss.item())
+    print ("    huber_loss: ", huber_loss.item())
 
-    # print()
-
-    # radii = cone_params[..., 3].cpu().detach().numpy()
-    # heights = cone_params[..., 4].cpu().detach().numpy()
-    # print("     Radii range:", radii.min(), radii.max())
-    # print("     Heights range:", heights.min(), heights.max())
-    # print("     Radii std:", radii.std())
-    # print("     Heights std:", heights.std())
-
-    loss.backward(retain_graph=True)
+    # loss.backward(retain_graph=True)
+    loss.backward()
     optimizer.step()
     print(f"Cone Iteration {i}, Loss: {loss.item()}\n")
     return cone_params
 
-
-
-def initialize_scores(sphere_params, cone_params, query_points, sdf_values):
-    """
-    Calculate baseline scores for primitives based on their contribution to the SDF fit.
-
-    Args:
-        sphere_params (torch.Tensor): Sphere parameters, shape [num_spheres, 4].
-        cone_params (torch.Tensor): Cone parameters, shape [num_cones, 8].
-        query_points (torch.Tensor): Query points, shape [num_points, 3].
-        sdf_values (torch.Tensor): Ground truth SDF values, shape [num_points].
-
-    Returns:
-        sphere_scores (torch.Tensor): Initial scores for spheres, shape [num_spheres].
-        cone_scores (torch.Tensor): Initial scores for cones, shape [num_cones].
-    """
-    cone_params = cone_params.squeeze(0)
-
-    # Compute SDF for each sphere
-    sphere_sdf = determine_sphere_sdf(query_points, sphere_params)  # Shape: [num_points, num_spheres]
-    sphere_errors = torch.mean((sphere_sdf - sdf_values.unsqueeze(1)) ** 2, dim=0)  # [num_spheres]
-    sphere_scores = 1.0 / (sphere_errors + 1e-6)  # Avoid division by zero
-
-    # Compute SDF for each cone
-    cone_sdf = determine_cone_sdf(query_points, cone_params.squeeze())  # Shape: [num_points, num_cones]
-    cone_sdf = cone_sdf.squeeze(0)
-    cone_errors = torch.mean((cone_sdf - sdf_values.unsqueeze(1)) ** 2, dim=0)  # [num_cones]
-    cone_scores = 1.0 / (cone_errors + 1e-6)  # Avoid division by zero
-
-    return sphere_scores, cone_scores
-
-
-
 def main():
+
+    startTime = time.time()
+
     torch.autograd.set_detect_anomaly(True)
 
-    num_cones = 128
+    num_cones = 256
     num_spheres = 128
-    num_epochs = 10
-    scoring_epochs = 2
-    batch_size = 4
-    num_spheres_sample = 10
-    num_cones_sample = 10
-    pruning_threshold = 0.1
+    num_epochs = 100
 
     dataset_path = "./reference_models_processed"
     name = "dog"
@@ -409,8 +373,6 @@ def main():
     points = torch.from_numpy(points).float().to(device)
     values = torch.from_numpy(values).float().to(device)
 
-    initial_cone_centers = initialize_cone_centers(points.cpu().numpy(), values, num_cones=num_cones, device=device)
-
     sphere_model = SphereNet(num_spheres=num_spheres).to(device)
     sphere_optimizer = torch.optim.Adam(sphere_model.parameters(), lr=0.0005)
 
@@ -419,67 +381,73 @@ def main():
 
     for i in range(num_epochs):
         sphere_params = run_spherenet(sphere_optimizer, sphere_model, voxel_data, points, values, device, i)
-        cone_params = run_conenet(cone_optimizer, cone_model, voxel_data, points, values, device, i, initial_cone_centers)
+        # cone_params = run_conenet(cone_optimizer, cone_model, voxel_data, points, values, device, i, num_epochs)
     
+    endTime = time.time()
+
+    print(f"            Total time taken: {endTime - startTime} seconds")
+
+
+
     sphere_params = sphere_params.cpu().detach()
-    cone_params = cone_params.cpu().detach()
+    # cone_params = cone_params.cpu().detach()
 
     print("points shape: ", points.shape)
     print("values shape: ", values.shape)
 
     print("Sphere Params Shape: ", sphere_params.shape)
-    print("Cone Params Shape: ", cone_params.squeeze(0).shape)
+    # print("Cone Params Shape: ", cone_params.squeeze(0).shape)
 
     sphere_sdf = determine_sphere_sdf(points, sphere_params)
-    cone_sdf = determine_cone_sdf(points, cone_params)
+    # cone_sdf = determine_cone_sdf(points, cone_params)
     print("Sphere SDF Shape: ", sphere_sdf.shape)
-    print("Cone SDF Shape: ", cone_sdf.squeeze(0).shape)
+    # print("Cone SDF Shape: ", cone_sdf.squeeze(0).shape)
 
     
     sphere_errors = torch.mean((sphere_sdf - values.unsqueeze(1)) ** 2, dim=0)  # [num_spheres]
-    cone_errors = torch.mean((cone_sdf.squeeze(0) - values.unsqueeze(1)) ** 2, dim=0)  # [num_cones]
+    # cone_errors = torch.mean((cone_sdf.squeeze(0) - values.unsqueeze(1)) ** 2, dim=0)  # [num_cones]
 
     sphere_paramms_with_errors = torch.cat((sphere_params, sphere_errors.unsqueeze(1)), dim=1)
-    cone_paramms_with_errors = torch.cat((cone_params.squeeze(0), cone_errors.unsqueeze(1)), dim=1)
+    # cone_paramms_with_errors = torch.cat((cone_params.squeeze(0), cone_errors.unsqueeze(1)), dim=1)
 
     print("Sphere Params with Errors Shape: ", sphere_paramms_with_errors.shape)
-    print("Cone Params with Errors Shape: ", cone_paramms_with_errors.shape)
+    # print("Cone Params with Errors Shape: ", cone_paramms_with_errors.shape)
 
     #print max and min values for errors
-    print("     Sphere Errors Max: ", sphere_errors.max().item())
-    print("     Sphere Errors Min: ", sphere_errors.min().item())
-    print("     Cone Errors Max: ", cone_errors.max().item())
-    print("     Cone Errors Min: ", cone_errors.min().item())
+    # print("     Sphere Errors Max: ", sphere_errors.max().item())
+    # print("     Sphere Errors Min: ", sphere_errors.min().item())
+    # print("     Cone Errors Max: ", cone_errors.max().item())
+    # print("     Cone Errors Min: ", cone_errors.min().item())
 
-    sphere_pruning_threshold = 0.5
-    cone_pruning_threshold = 0.05
+    # sphere_pruning_threshold = 0.5
+    # cone_pruning_threshold = 0.05
 
-    sphere_mask = sphere_paramms_with_errors[:, -1] < sphere_pruning_threshold
-    cone_mask = cone_paramms_with_errors[:, -1] < cone_pruning_threshold
+    # sphere_mask = sphere_paramms_with_errors[:, -1] < sphere_pruning_threshold
+    # cone_mask = cone_paramms_with_errors[:, -1] < cone_pruning_threshold
 
-    pruned_sphere_params = sphere_paramms_with_errors[sphere_mask]
-    pruned_cone_params = cone_paramms_with_errors[cone_mask]
+    # pruned_sphere_params = sphere_paramms_with_errors[sphere_mask]
+    # pruned_cone_params = cone_paramms_with_errors[cone_mask]
 
-    pruned_sphere_params = pruned_sphere_params[:, :-1]
-    pruned_cone_params = pruned_cone_params[:, :-1]
+    # pruned_sphere_params = pruned_sphere_params[:, :-1]
+    # pruned_cone_params = pruned_cone_params[:, :-1]
 
-    print("Pruned Sphere Params Shape: ", pruned_sphere_params.shape)
-    print("Pruned Cone Params Shape: ", pruned_cone_params.shape)
+    # print("Pruned Sphere Params Shape: ", pruned_sphere_params.shape)
+    # print("Pruned Cone Params Shape: ", pruned_cone_params.shape)
 
-    visualise_spheres(points, values, sphere_params, reference_model=None, save_path=None)
-    visualise_spheres(points, values, pruned_sphere_params, reference_model=None, save_path=None)
-
-    visualize_cones(points, values, cone_params, save_path=None)
-    visualize_cones_small(points, values, pruned_cone_params, save_path=None)
-    visualize_primitives(pruned_sphere_params, pruned_cone_params, save_path="./output_primitives.obj")
+    # visualise_spheres(points, values, sphere_params, reference_model=None, save_path=None)
+    # visualise_spheres(points, values, pruned_sphere_params, reference_model=None, save_path=None)
 
     output_dir = "./output"
     os.makedirs(output_dir, exist_ok=True)
+
+    # visualize_cones_small(points, values, cone_params, save_path=os.path.join(output_dir, f"{name}_cones.obj"))
+    # visualize_cones_small(points, values, pruned_cone_params, save_path=os.path.join(output_dir, f"{name}_spheres.obj"))
+    # visualize_primitives(pruned_sphere_params, pruned_cone_params, save_path=os.path.join(output_dir, f"{name}_combined.obj"")  
     
     np.save(os.path.join(output_dir, f"{name}_sphere_params.npy"), sphere_params.cpu().detach().numpy())
-    np.save(os.path.join(output_dir, f"{name}_cone_params.npy"), cone_params.cpu().detach().numpy())
+    # np.save(os.path.join(output_dir, f"{name}_cone_params.npy"), cone_params.cpu().detach().numpy())
 
-    print("         Cone Params Shape: ", cone_params.shape)
+    # print("         Cone Params Shape: ", cone_params.shape)
 
     # visualise_spheres(points, values, sphere_params, reference_model=None, save_path=os.path.join(output_dir, f"{name}_spheres.obj"))
     # visualize_cones(points, values, cone_params, save_path=os.path.join(output_dir, f"{name}_cones.obj"))

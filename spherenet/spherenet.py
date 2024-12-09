@@ -54,8 +54,8 @@ class SphereNet(nn.Module):
         sphere_params = torch.sigmoid(sphere_params.view(-1, 4))
         # print(f"Sphere Params Shape: {sphere_params.shape}")  # Debug reshaped sphere_params
 
-        sphere_adder = torch.tensor([-0.5, -0.5, -0.5, 0.01]).to(sphere_params.device)
-        sphere_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.2]).to(sphere_params.device)
+        sphere_adder = torch.tensor([-0.5, -0.5, -0.5, -1.0]).to(sphere_params.device)
+        sphere_multiplier = torch.tensor([1.0, 1.0, 1.0, 2]).to(sphere_params.device)
         sphere_params = sphere_params * sphere_multiplier + sphere_adder
         sphere_sdf = determine_sphere_sdf(query_points, sphere_params)
         return sphere_sdf, sphere_params

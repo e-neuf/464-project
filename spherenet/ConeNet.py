@@ -16,7 +16,7 @@ class ConeNet(nn.Module):
         self.decoder = Decoder()
         self.feature_mapper = nn.Linear(512, num_cones * 8)  # 4 parameters: center (3), radius (1)
 
-    def forward(self, voxel_data, query_points, initial_centers):
+    def forward(self, voxel_data, query_points):
         # Pass the voxel data through the encoder
         features = self.encoder(voxel_data)
         # Decode the features into cone parameters
@@ -26,8 +26,8 @@ class ConeNet(nn.Module):
 
         cone_params = torch.sigmoid(cone_params.view(-1, 8))
 
-        cone_adder = torch.tensor([-0.8, -0.8, -0.8, 0.05, 0.1, -1.0, -1.0, -1.0]).to(cone_params.device)
-        cone_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.01, 0.03, 1.7, 1.7, 1.7]).to(cone_params.device)
+        cone_adder = torch.tensor([-0.5, -0.5, -0.5, 0.0, 0.0, -1.0, -1.0, -1.0]).to(cone_params.device)
+        cone_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.1, 0.1, 2.0, 2.0, 2.0]).to(cone_params.device)
         cone_params = cone_params * cone_multiplier + cone_adder
 
         cone_sdf = determine_cone_sdf(query_points, cone_params)
