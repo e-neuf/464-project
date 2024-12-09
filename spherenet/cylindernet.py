@@ -6,8 +6,7 @@ import trimesh
 from scipy.ndimage import gaussian_filter
 from skimage.transform import resize
 from dgcnn import DGCNNFeat
-
-num_shapes = 10
+import time
 
 def bsmin(a, dim, k=22.0, keepdim=False):
     dmix = -torch.logsumexp(-k * a, dim=dim, keepdim=keepdim) / k
@@ -27,10 +26,13 @@ def determine_cylinder_sdf(query_points, cylinder_params):
     axes_normalized = torch.nn.functional.normalize(axes)
     
     for i in range(num_cylinders):
-        # calcualte distance from query points to cylinder axis
-        scalar_points = torch.linalg.vecdot(query_points - centers[i,:], axes_normalized[i,:])
+        # project query points onto cylinder axis
+        #scalar_points = torch.linalg.vecdot(query_points - centers[i,:], axes_normalized[i,:]) # v1
+        scalar_points = torch.linalg.vecdot(query_points - centers[i,:], axes_normalized[i,:] - centers[i,:]) # v2
         projection = scalar_points[:, np.newaxis] * axes_normalized[i,:]
         closest_points = centers[i,:] + projection
+
+        # calcualte distance from query points to cylinder axis
         dist_to_axis = torch.linalg.vector_norm(query_points - closest_points, dim=1)
         point_is_within_radius = torch.le(dist_to_axis, radii[i])
         #print("num of points within the radius: "+str(torch.count_nonzero(point_is_within_radius)))
@@ -45,6 +47,8 @@ def determine_cylinder_sdf(query_points, cylinder_params):
         dist_to_bottom = torch.linalg.vector_norm(projection - bottom, dim=1)
         dist_to_height = torch.minimum(dist_to_top, dist_to_bottom)
         point_is_within_height = torch.le((dist_to_top + dist_to_bottom), heights[i])
+        if (torch.count_nonzero(point_is_within_height) > 0):
+            print("there exist points within the height!!!")
         #print("num of points within the height: "+str(torch.count_nonzero(point_is_within_height)))
 
         # use the appropriate distance for each query point
@@ -54,11 +58,11 @@ def determine_cylinder_sdf(query_points, cylinder_params):
         point_is_within_none = ~(point_is_within_height | point_is_within_radius)
         #print("num of points within none: "+str(torch.count_nonzero(point_is_within_none)))
 
-        dist_to_cyl[point_is_within_height,i] = dist_to_axis[point_is_within_height]
+        dist_to_cyl[point_is_within_height,i] = dist_to_axis[point_is_within_height] - radii[i]
         dist_to_cyl[point_is_within_radius,i] = dist_to_height[point_is_within_radius]
         inside = -1 * torch.minimum(torch.abs(dist_to_axis - radii[i]), dist_to_height)
         dist_to_cyl[point_is_inside,i] = inside[point_is_inside]
-        dist_to_cyl[point_is_within_none,i] = torch.sqrt(dist_to_axis[point_is_within_none]**2 + dist_to_height[point_is_within_none]**2)
+        dist_to_cyl[point_is_within_none,i] = torch.sqrt((dist_to_axis[point_is_within_none] - radii[i])**2 + dist_to_height[point_is_within_none]**2)
     
     return dist_to_cyl
 
@@ -113,7 +117,7 @@ class CylinderNet(nn.Module):
         cylinder_params = torch.sigmoid(cylinder_params.view(-1, 8))
         #sphere_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1]).to(sphere_params.device)
         #sphere_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.4]).to(sphere_params.device)
-        cylinder_adder = torch.tensor([-0.5, -0.5, -0.5, -0.5, -0.5, -0.5, 0.1, 0.1]).to(cylinder_params.device)
+        cylinder_adder = torch.tensor([-0.8, -0.8, -0.8, -0.8, -0.8, -0.8, 0.1, 0.1]).to(cylinder_params.device)
         cylinder_multiplier = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2]).to(cylinder_params.device)
         cylinder_params = cylinder_params * cylinder_multiplier + cylinder_adder
         
@@ -232,6 +236,26 @@ def penalize_large_cylinders(cylinder_params):
     cylinder_height = cylinder_params[:,7]
     return torch.mean(cylinder_radii ** 2 + cylinder_height ** 2)
 
+def calculate_huber_loss(predictions, targets, delta=1.0):
+    """
+    Compute the Huber loss.
+
+    Args:
+        predictions (torch.Tensor): Predicted values.
+        targets (torch.Tensor): Ground truth values.
+        delta (float): Threshold parameter for the Huber loss.
+
+    Returns:
+        torch.Tensor: The computed Huber loss.
+    """
+    error = predictions - targets
+    abs_error = torch.abs(error)
+    
+    quadratic = torch.where(abs_error <= delta, 0.5 * error ** 2, torch.zeros_like(error))
+    linear = torch.where(abs_error > delta, delta * abs_error - 0.5 * delta ** 2, torch.zeros_like(error))
+    
+    loss = quadratic + linear
+    return torch.mean(loss)
 
 def main():
     dataset_path = "./reference_models_processed"
@@ -268,26 +292,31 @@ def main():
     points = torch.from_numpy(points).float().to(device)
     values = torch.from_numpy(values).float().to(device)
 
-    model = CylinderNet(num_cylinders=num_shapes).to(device)
+    model = CylinderNet(num_cylinders=32).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 
-    num_epochs = 50   #change parameter for number of itearations
+    num_epochs = 50   # change parameter for number of itearations
+    prev_loss = 0
+    start_time = time.time()
     for i in range(num_epochs):
         optimizer.zero_grad()
         cylinder_sdf, cylinder_params = model(
-            voxel_data.unsqueeze(0), points
-        )
+            voxel_data.unsqueeze(0), points )
         
         cylinder_sdf = bsmin(cylinder_sdf, dim=-1).to(device)
-        loss = nn.MSELoss()(cylinder_sdf, values)
-        #loss = penalize_large_cylinders(cylinder_params)
+        #loss = nn.MSELoss()(cylinder_sdf, values)
+        #loss = penalize_large_cylinders(cylinder_params) # took a rlly long time to run
+        loss = calculate_huber_loss(cylinder_sdf, values)
         loss.backward()
         optimizer.step()
         print(f"Iteration {i}, Loss: {loss.item()}")
 
-        if loss < 0.0028:   #modify as needed
+        if ((loss == prev_loss) | (loss < 0.0028)): # modify as needed
             break
+        prev_loss = loss
         
+    end_time = time.time()
+    print("Training time: "+str(end_time - start_time)+" seconds")
     output_dir = "./output"
     os.makedirs(output_dir, exist_ok=True)
     np.save(os.path.join(output_dir, f"{name}_cylinder_params.npy"), cylinder_params.cpu().detach().numpy())
