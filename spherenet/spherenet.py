@@ -7,7 +7,7 @@ from scipy.ndimage import gaussian_filter
 from skimage.transform import resize
 from dgcnn import DGCNNFeat
 
-num_shapes = 10
+num_shapes = 20
 
 def bsmin(a, dim, k=22.0, keepdim=False):
     dmix = -torch.logsumexp(-k * a, dim=dim, keepdim=keepdim) / k
@@ -111,38 +111,63 @@ class CylinderNet(nn.Module):
         cylinder_params = torch.sigmoid(cylinder_params.view(-1, 8))
         #sphere_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1]).to(sphere_params.device)
         #sphere_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.4]).to(sphere_params.device)
-        # extra adder and multiplier values chosen at semi-random
-        cylinder_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1, 0.1, 0.1, 0.1, 0.1]).to(cylinder_params.device)
-        cylinder_multiplier = torch.tensor([1.0, 1.0, 1.0,1.0, 1.0, 1.0, 0.4, 0.4]).to(cylinder_params.device)
+        cylinder_adder = torch.tensor([-0.5, -0.5, -0.5, -0.5, -0.5, -0.5, 0.1, 0.1]).to(cylinder_params.device)
+        cylinder_multiplier = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2]).to(cylinder_params.device)
         cylinder_params = cylinder_params * cylinder_multiplier + cylinder_adder
         cylinder_sdf = determine_cylinder_sdf(query_points, cylinder_params)
         return cylinder_sdf, cylinder_params
 
-def visualize_cylinders(scene, cylinder_params, reference_model=None, save_path=None):
-    cylinder_params = cylinder_params.cpu().detach().numpy()
-    cylinder_centers = cylinder_params[..., :3]
-    cylinder_axes = cylinder_params[..., 3:6]
-    cylinder_radii = cylinder_params[..., 6]
-    cylinder_heights = cylinder_params[..., 7]
+def visualize_cylinders(cylinder_params, points, values, reference_model=None, save_path=None):
+    cylinder_params = cylinder_params.squeeze(0).cpu().detach().numpy() # Handle any extra batch dimensions safely
+    cylinder_centers = cylinder_params[:, :3]
+    cylinder_axes = cylinder_params[:, 3:6]
+    cylinder_radii = cylinder_params[:, 6]
+    cylinder_heights = cylinder_params[:, 7]
+    scene = trimesh.Scene()
 
     for i in range(cylinder_params.shape[0]):
         cyl = trimesh.creation.cylinder(cylinder_heights[i], cylinder_radii[i])
-        # cyl.apply transformation()
+
+        # Normalize the axis vector
+        axis = cylinder_axes[i]
+        if np.linalg.norm(axis) < 1e-6:
+            axis = np.array([0, 0, 1])  # Default orientation if invalid
+        axis = axis / np.linalg.norm(axis)
+
+        # Compute the rotation matrix to align the cone with the orientation vector
+        z_axis = np.array([0, 0, 1])
+        rotation_axis = np.cross(z_axis, axis)
+        if np.linalg.norm(rotation_axis) < 1e-6:
+            rotation_matrix = np.eye(4)  # No rotation needed
+        else:
+            rotation_angle = np.arccos(np.dot(z_axis, axis))
+            rotation_matrix = trimesh.transformations.rotation_matrix(rotation_angle, rotation_axis)
+
+        cyl.apply_transform(rotation_matrix)
         cyl.apply_translation(cylinder_centers[i])
         scene.add_geometry(cyl)
+    
+    inside_points = points[values < 0]
+    if len(inside_points) > 0:
+        inside_points = trimesh.points.PointCloud(inside_points)
+        inside_points.colors = np.array([[0, 0, 255, 255]] * len(inside_points.vertices))  # Blue color for inside points
+        scene.add_geometry(inside_points)
         
     if save_path is not None:
         scene.export(save_path)
 
+    scene.show()
+
 def visualise_sdf(scene, points, values):
     inside_points = points[values < 0]
-    outside_points = points[values > 0]
+    #outside_points = points[values > 0]
     if len(inside_points) > 0:
         inside_points = trimesh.points.PointCloud(inside_points)
-        outside_points = trimesh.points.PointCloud(outside_points)
+        #outside_points = trimesh.points.PointCloud(outside_points)
         inside_points.colors = np.array([[0, 0, 255, 255]] * len(inside_points.vertices))  # Blue color for inside points
-        outside_points.colors = np.array([[0, 255, 255, 255]] * len(outside_points.vertices))  # Red color for outside points
-        scene.add_geometry([inside_points, outside_points])
+        #outside_points.colors = np.array([[0, 255, 255, 255]] * len(outside_points.vertices))  # Red color for outside points
+        scene.add_geometry(inside_points)
+        #scene.add_geometry([inside_points, outside_points])
 
 def voxel_to_mesh(voxel_data):
     # Convert voxel data to a mesh representation
@@ -189,6 +214,22 @@ def visualise_voxels(voxel_data):
     # Show the scene
     scene.show()
 
+# loss functions
+def penalize_large_cylinders(cylinder_params):
+    """
+    Penalize cylinders with large radii to encourage fitting finer features.
+
+    Args:
+        cylinder_params (torch.Tensor): Cylinder parameters (centers, axes, radii, and height).
+
+    Returns:
+        torch.Tensor: Penalty for large radii and height.
+    """
+    cylinder_radii = cylinder_params[:,6]
+    cylinder_height = cylinder_params[:,7]
+    return torch.mean(cylinder_radii ** 2 + cylinder_height ** 2)
+
+
 def main():
     dataset_path = "./reference_models_processed"
     name = "dog"
@@ -227,7 +268,7 @@ def main():
     model = CylinderNet(num_cylinders=num_shapes).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 
-    num_epochs = 10   #change parameter for number of itearations
+    num_epochs = 50   #change parameter for number of itearations
     for i in range(num_epochs):
         optimizer.zero_grad()
         cylinder_sdf, cylinder_params = model(
@@ -235,8 +276,8 @@ def main():
         )
         
         cylinder_sdf = bsmin(cylinder_sdf, dim=-1).to(device)
-        mseloss = nn.MSELoss()(cylinder_sdf, values)
-        loss = mseloss
+        loss = nn.MSELoss()(cylinder_sdf, values)
+        #loss = penalize_large_cylinders(cylinder_params)
         loss.backward()
         optimizer.step()
         print(f"Iteration {i}, Loss: {loss.item()}")
@@ -248,12 +289,8 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     np.save(os.path.join(output_dir, f"{name}_cylinder_params.npy"), cylinder_params.cpu().detach().numpy())
     
-    #print(cylinder_params)
-
-    scene = trimesh.Scene()
-    visualize_cylinders(scene, cylinder_params)
-    #visualise_sdf(scene, points, cylinder_sdf)
-    scene.show()
+    print(cylinder_params)
+    visualize_cylinders(cylinder_params, points, values)
 
     torch.save(model.state_dict(), os.path.join(output_dir, f"{name}_model.pth"))
 
