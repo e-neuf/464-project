@@ -10,20 +10,12 @@ class Decoder(nn.Module):
             nn.ReLU(inplace=True),
             nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
-            # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
-            # nn.ReLU(inplace=True),
-            # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
-            # nn.ReLU(inplace=True),
         )
         self.net2 = nn.Sequential(
             nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
             nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
             nn.ReLU(inplace=True),
-            # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
-            # nn.ReLU(inplace=True),
-            # nn.utils.weight_norm(nn.Linear(feat_ch, feat_ch)),
-            # nn.ReLU(inplace=True),
             nn.Linear(feat_ch, out_ch),
         )
         num_params = sum(p.numel() for p in self.parameters())
