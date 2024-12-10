@@ -5,9 +5,9 @@ import os
 import trimesh
 from scipy.ndimage import gaussian_filter
 from skimage.transform import resize
-from Loss import calculate_coverage_loss, calculate_huber_loss, calculate_inside_coverage_loss, calculate_graded_outside_loss, calculate_size_diversity_loss, penalize_large_spheres, calculate_inside_cone_coverage_loss, cone_overlap_loss, penalize_large_cones, calculate_overlap_loss, cone_size_diversity_loss, cone_pairwise_difference_loss, cone_overlap_loss, combined_fit_loss,height_diversity_loss, calculate_graded_outside_loss_cone_sdf
+from Loss import  calculate_huber_loss, calculate_inside_coverage_loss, calculate_graded_outside_loss, penalize_large_spheres, calculate_inside_cone_coverage_loss, cone_overlap_loss, calculate_overlap_loss, cone_overlap_loss, calculate_graded_outside_loss_cone_sdf
 from ConeNet import ConeNet, visualize_cones
-from SphereNet import SphereNet, visualise_spheres
+from spherenet import SphereNet, visualise_spheres
 from sklearn.cluster import KMeans
 from SDF import determine_cone_sdf, determine_sphere_sdf
 from MetaNet import MetaNet
@@ -173,14 +173,14 @@ def main():
     output_dir = "./output"
     models = [
         'dog', 
-        'hand', 
-        'pot', 
-        'rod', 
-        'sofa'
+        # 'hand', 
+        # 'pot', 
+        # 'rod', 
+        # 'sofa'
     ]
     
-    iterations = 200
-    num_primitives = 256
+    iterations = 2
+    num_primitives = 10
 
     for model in models:
         print (f"Running training loop for {model}")
