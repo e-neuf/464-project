@@ -87,75 +87,7 @@ def visualize_primitives(points, values, sphere_params, cone_params, save_path=N
     inside_points.colors = [0, 0, 255, 255]  
     scene.add_geometry([inside_points])
 
-    if save_path is None:
-        scene.show()
-    else:
-        scene.show()
-        scene.export(save_path)
-        print(f"Visualization")
-
-
-def visualize_cones_small(points, values, cone_params, save_path=None):
-    """
-    Visualize cones using their parameters and SDF data.
-
-    Args:
-        points (torch.Tensor): Points in the 3D space, shape [num_points, 3].
-        values (torch.Tensor): SDF values for the points, shape [num_points].
-        cone_params (torch.Tensor): Parameters for cones, shape [x, 8].
-        save_path (str, optional): Path to save the visualization. Defaults to None.
-    """
-    # Ensure cone_params is of shape [x, 8]
-    cone_params = cone_params.squeeze(0).cpu().detach().numpy() 
-    cone_centers = cone_params[:, :3]
-    cone_radii = np.abs(cone_params[:, 3])
-    cone_heights = np.abs(cone_params[:, 4])
-    cone_orientations = cone_params[:, 5:8]
-    scene = trimesh.Scene()
-
-    for i in range(cone_centers.shape[0]):
-        center = cone_centers[i]
-        radius = cone_radii[i]
-        height = cone_heights[i]
-        orientation = cone_orientations[i]
-
-        radius = float(radius)
-        height = float(height)
-
-        # Extract points within the region of the cone
-        mask = np.linalg.norm(points.cpu().detach().numpy() - center, axis=1) < radius
-        region_points = points[mask].cpu().detach().numpy()
-
-        # Normalize the orientation vector
-        if np.linalg.norm(orientation) < 1e-6:
-            orientation = np.array([0, 0, 1])  
-        orientation = orientation / np.linalg.norm(orientation)
-
-        cone = trimesh.creation.cone(radius=radius, height=height)
-
-        # Compute the rotation matrix to align the cone with the orientation vector
-        z_axis = np.array([0, 0, 1])
-        rotation_axis = np.cross(z_axis, orientation)
-        if np.linalg.norm(rotation_axis) < 1e-6:
-            rotation_matrix = np.eye(4)  #identity matrix
-        else:
-            rotation_angle = np.arccos(np.dot(z_axis, orientation))
-            rotation_matrix = trimesh.transformations.rotation_matrix(rotation_angle, rotation_axis)
-
-        cone.apply_transform(rotation_matrix)
-        cone.apply_translation(center)
-        scene.add_geometry(cone)
-
-    inside_points = points[values < 0].cpu().detach().numpy()
-    if len(inside_points) > 0:
-        inside_points = trimesh.points.PointCloud(inside_points)
-        inside_points.colors = np.array([[0, 0, 255, 255]] * len(inside_points.vertices))  
-        scene.add_geometry([inside_points])
-
-    if save_path is not None:
-        scene.export(save_path)
     scene.show()
-
 
 def bsmin(a, dim, k=22.0, keepdim=False):
     dmix = -torch.logsumexp(-k * a, dim=dim, keepdim=keepdim) / k
@@ -305,8 +237,8 @@ def run_training_loop(output_dir, model_name, iterations, num_primitives):
     np.save(os.path.join(output_dir, f"{name}_sphere_params.npy"), sphere_params.cpu().detach().numpy())
     np.save(os.path.join(output_dir, f"{name}_cone_params.npy"), cone_params.cpu().detach().numpy())
 
-    # visualise_spheres(points, values, sphere_params, reference_model=None, save_path=os.path.join(output_dir, f"{name}_spheres.obj"))
-    # visualize_cones(points, values, cone_params, save_path=os.path.join(output_dir, f"{name}_cones.obj"))
+    visualise_spheres(points, values, sphere_params, reference_model=None, save_path=os.path.join(output_dir, f"{name}_spheres.obj"))
+    visualize_cones(points, values, cone_params, save_path=os.path.join(output_dir, f"{name}_cones.obj"))
 
     torch.save(sphere_model.state_dict(), os.path.join(output_dir, f"{name}_sphere_model.pth"))
     torch.save(cone_model.state_dict(), os.path.join(output_dir, f"{name}_cone_model.pth"))
@@ -321,8 +253,8 @@ def main():
         # 'sofa'
     ]
     
-    iterations = 200
-    num_primitives = 256
+    iterations = 1
+    num_primitives = 2
 
     for model in models:
         print (f"Running training loop for {model}")
