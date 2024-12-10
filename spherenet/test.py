@@ -8,7 +8,6 @@ from SDF import determine_sphere_sdf, determine_cone_sdf
 from PrimitiveNet import visualize_cones_small
 from ConeNet import visualize_cones
 from spherenet import visualise_spheres
-from PrimitiveNet import voxel_to_mesh
 import trimesh
 
 
@@ -74,11 +73,11 @@ def test_metanet(threshold, baseline_points, baseline_values, sphere_file, cone_
 
     print("Cone Params Shape: ", cone_params_from_file.shape)
 
-    visualize_cones_small(points, sdf_values, cone_params_from_file, save_path=None)
+    # visualize_cones_small(points, sdf_values, cone_params_from_file, save_path=None)
     # visualize_cones_small(points, sdf_values, pruned_cone_params, save_path=None)
 
 
-    # visualize_primitives(baseline_points, baseline_values, pruned_sphere_params, pruned_cone_params, save_path="./output/pruned_primitives.npy")
+    visualize_primitives(baseline_points, baseline_values, pruned_sphere_params, pruned_cone_params, save_path="./output/pruned_primitives.npy")
 
 if __name__ == "__main__":
 

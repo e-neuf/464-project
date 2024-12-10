@@ -15,6 +15,148 @@ import torch.nn.functional as F
 import random
 import time
 
+def visualize_primitives(points, values, sphere_params, cone_params, save_path=None):
+    """
+    Visualize spheres and cones using Trimesh.
+    
+    Args:
+        sphere_params (np.ndarray): Parameters for spheres, shape [num_spheres, 4].
+                                     Each sphere is represented as [x, y, z, r].
+        cone_params (np.ndarray): Parameters for cones, shape [num_cones, 8].
+                                   Each cone is represented as [x, y, z, r, h, dx, dy, dz].
+        save_path (str, optional): Path to save the visualization as an OBJ file.
+                                   If None, the visualization is shown interactively.
+    """
+    # Convert tensors to NumPy arrays 
+    if isinstance(sphere_params, torch.Tensor):
+        sphere_params = sphere_params.cpu().numpy()
+    if isinstance(cone_params, torch.Tensor):
+        cone_params = cone_params.cpu().numpy()
+
+    # Handle extra dimensions in cone_params
+    if len(cone_params.shape) == 3:  
+        cone_params = cone_params.squeeze(0)  
+
+    assert np.all(np.isfinite(sphere_params)), "Sphere parameters contain invalid values!"
+    assert np.all(np.isfinite(cone_params)), "Cone parameters contain invalid values!"
+
+    scene = trimesh.Scene()
+
+    # Add spheres to the scene
+    for center, radius in zip(sphere_params[:, :3], sphere_params[:, 3]):
+        try:
+            radius = float(radius)
+            sphere = trimesh.creation.icosphere(radius=abs(radius), subdivisions=3)
+            sphere.apply_translation(center)
+
+            scene.add_geometry(sphere)
+        except Exception as e:
+            print(f"Error creating sphere with center={center}, radius={radius}: {e}")
+
+    # Add cones to the scene
+    for i, (center, radius, height, orientation) in enumerate(zip(
+        cone_params[:, :3],
+        cone_params[:, 3],
+        cone_params[:, 4],
+        cone_params[:, 5:8]
+    )):
+        try:
+            radius = float(radius)
+            height = float(height)
+
+            # Default orientation if invalid
+            if np.linalg.norm(orientation) == 0:
+                orientation = np.array([0, 0, 1])
+            orientation = orientation / np.linalg.norm(orientation)
+
+            cone = trimesh.creation.cone(radius=abs(radius), height=abs(height))
+
+            # Align the cone orientation
+            z_axis = np.array([0, 0, 1])  # Default cone direction
+            rotation_matrix = trimesh.geometry.align_vectors(z_axis, orientation)
+            cone.apply_transform(rotation_matrix)
+
+            cone.apply_translation(center)
+
+            scene.add_geometry(cone)
+        except Exception as e:
+            print(f"Error creating cone {i} with center={center}, radius={radius}, height={height}, orientation={orientation}: {e}")
+
+    inside_points = points[values < 0]
+    inside_points = trimesh.points.PointCloud(inside_points)
+    inside_points.colors = [0, 0, 255, 255]  
+    scene.add_geometry([inside_points])
+
+    if save_path is None:
+        scene.show()
+    else:
+        scene.show()
+        scene.export(save_path)
+        print(f"Visualization")
+
+
+def visualize_cones_small(points, values, cone_params, save_path=None):
+    """
+    Visualize cones using their parameters and SDF data.
+
+    Args:
+        points (torch.Tensor): Points in the 3D space, shape [num_points, 3].
+        values (torch.Tensor): SDF values for the points, shape [num_points].
+        cone_params (torch.Tensor): Parameters for cones, shape [x, 8].
+        save_path (str, optional): Path to save the visualization. Defaults to None.
+    """
+    # Ensure cone_params is of shape [x, 8]
+    cone_params = cone_params.squeeze(0).cpu().detach().numpy() 
+    cone_centers = cone_params[:, :3]
+    cone_radii = np.abs(cone_params[:, 3])
+    cone_heights = np.abs(cone_params[:, 4])
+    cone_orientations = cone_params[:, 5:8]
+    scene = trimesh.Scene()
+
+    for i in range(cone_centers.shape[0]):
+        center = cone_centers[i]
+        radius = cone_radii[i]
+        height = cone_heights[i]
+        orientation = cone_orientations[i]
+
+        radius = float(radius)
+        height = float(height)
+
+        # Extract points within the region of the cone
+        mask = np.linalg.norm(points.cpu().detach().numpy() - center, axis=1) < radius
+        region_points = points[mask].cpu().detach().numpy()
+
+        # Normalize the orientation vector
+        if np.linalg.norm(orientation) < 1e-6:
+            orientation = np.array([0, 0, 1])  
+        orientation = orientation / np.linalg.norm(orientation)
+
+        cone = trimesh.creation.cone(radius=radius, height=height)
+
+        # Compute the rotation matrix to align the cone with the orientation vector
+        z_axis = np.array([0, 0, 1])
+        rotation_axis = np.cross(z_axis, orientation)
+        if np.linalg.norm(rotation_axis) < 1e-6:
+            rotation_matrix = np.eye(4)  #identity matrix
+        else:
+            rotation_angle = np.arccos(np.dot(z_axis, orientation))
+            rotation_matrix = trimesh.transformations.rotation_matrix(rotation_angle, rotation_axis)
+
+        cone.apply_transform(rotation_matrix)
+        cone.apply_translation(center)
+        scene.add_geometry(cone)
+
+    inside_points = points[values < 0].cpu().detach().numpy()
+    if len(inside_points) > 0:
+        inside_points = trimesh.points.PointCloud(inside_points)
+        inside_points.colors = np.array([[0, 0, 255, 255]] * len(inside_points.vertices))  
+        scene.add_geometry([inside_points])
+
+    if save_path is not None:
+        scene.export(save_path)
+    scene.show()
+
+
 def bsmin(a, dim, k=22.0, keepdim=False):
     dmix = -torch.logsumexp(-k * a, dim=dim, keepdim=keepdim) / k
     return dmix
@@ -179,8 +321,8 @@ def main():
         # 'sofa'
     ]
     
-    iterations = 2
-    num_primitives = 10
+    iterations = 200
+    num_primitives = 256
 
     for model in models:
         print (f"Running training loop for {model}")
