@@ -378,7 +378,7 @@ def run_training_loop(output_dir, model_name, iterations, num_primitives):
 
     for i in range(num_epochs):
         sphere_params = run_spherenet(sphere_optimizer, sphere_model, voxel_data, points, values, device, i)
-        # cone_params = run_conenet(cone_optimizer, cone_model, voxel_data, points, values, device, i, num_epochs)
+        cone_params = run_conenet(cone_optimizer, cone_model, voxel_data, points, values, device, i, num_epochs)
     
     endTime = time.time()
 
@@ -437,9 +437,9 @@ def run_training_loop(output_dir, model_name, iterations, num_primitives):
 def main():
     output_dir = "./output"
     models = [
-        'dog', 
-        'hand', 
-        'pot', 
+        # 'dog', 
+        # 'hand', 
+        # 'pot', 
         'rod', 
         'sofa'
     ]
