@@ -145,10 +145,8 @@ class CylinderNet(nn.Module):
         cylinder_params = self.feature_mapper(cylinder_params).view(self.num_cylinders, 8)
 
         cylinder_params = torch.sigmoid(cylinder_params.view(-1, 8))
-        #sphere_adder = torch.tensor([-0.5, -0.5, -0.5, 0.1]).to(sphere_params.device)
-        #sphere_multiplier = torch.tensor([1.0, 1.0, 1.0, 0.4]).to(sphere_params.device)
-        cylinder_adder = torch.tensor([-0.8, -0.8, -0.8, -0.8, -0.8, -0.8, 0.1, 0.1]).to(cylinder_params.device)
-        cylinder_multiplier = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2]).to(cylinder_params.device)
+        cylinder_adder = torch.tensor([-0.8, -0.8, -0.8, -1.0, -1.0, -1.0, 0.1, 0.1]).to(cylinder_params.device)
+        cylinder_multiplier = torch.tensor([1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 0.1, 0.1]).to(cylinder_params.device)
         cylinder_params = cylinder_params * cylinder_multiplier + cylinder_adder
         
         cylinder_sdf = determine_cylinder_sdf(query_points, cylinder_params)
@@ -362,10 +360,7 @@ def main():
     # Load the voxel data from the .npz file
     data = np.load(path)
     #print(data.files)  # Inspect the contents of the .npz file
-
     voxel_data = data["voxels"]
-    #centroid = data["centroid"]
-    #scale = data["scale"]
 
     # Preprocess the voxel data
     voxel_data = preprocess_voxel_data(voxel_data)
@@ -381,17 +376,13 @@ def main():
     # visualise_sdf(points, values)
     # visualise_voxels(voxel_data)
 
-    # Apply the same transformations to the points
-    #points = (points - centroid) / scale
-
     points = torch.from_numpy(points).float().to(device)
     values = torch.from_numpy(values).float().to(device)
 
-    model = CylinderNet(num_cylinders=256).to(device)
+    model = CylinderNet(num_cylinders=32).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 
-    num_epochs = 100   # change parameter for number of itearations
-    prev_loss = 0
+    num_epochs = 50   # change parameter for number of itearations
     start_time = time.time()
     for i in range(num_epochs):
         optimizer.zero_grad()
@@ -401,7 +392,6 @@ def main():
         cylinder_sdf_bsm = bsmin(cylinder_sdf, dim=-1).to(device)
         #loss = nn.MSELoss()(cylinder_sdf_bsm, values)
         #loss = penalize_large_cylinders(cylinder_params) # took a rlly long time to run
-        #loss = calculate_huber_loss(cylinder_sdf_bsm, values)
         loss = nn.HuberLoss()(cylinder_sdf_bsm, values)
         """
         loss = nn.MSELoss()(cylinder_sdf_bsm, values)
@@ -412,10 +402,6 @@ def main():
         loss.backward()
         optimizer.step()
         print(f"Iteration {i}, Loss: {loss.item()}")
-
-        if ((loss == prev_loss) | (loss < 0.0028)): # modify as needed
-            break
-        prev_loss = loss
         
     end_time = time.time()
     print("Training time: "+str(end_time - start_time)+" seconds")

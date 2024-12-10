@@ -1,0 +1,7 @@
+32 cyls
+50 epochs
+huber loss
+final loss 0.004344199318438768
+training time 506.62672114372253 seconds
+cylinder_adder = torch.tensor([-0.8, -0.8, -0.8, -1.0, -1.0, -1.0, 0.0, 0.0]).to(cylinder_params.device)
+cylinder_multiplier = torch.tensor([1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 0.1, 0.1]).to(cylinder_params.device)
