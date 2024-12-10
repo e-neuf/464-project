@@ -437,18 +437,21 @@ def run_training_loop(output_dir, model_name, iterations, num_primitives):
 def main():
     output_dir = "./output"
     models = [
-        # 'dog', 
-        # 'hand', 
-        # 'pot', 
+        'dog', 
+        'hand', 
+        'pot', 
         'rod', 
         'sofa'
     ]
     
-    iterations = 100
+    iterations = 200
     num_primitives = 256
 
     for model in models:
+        print (f"Running training loop for {model}")
         run_training_loop(output_dir, model, iterations, num_primitives)
+        print (f"Finished training loop for {model}")
+        print("############################################")
 
 if __name__ == "__main__":
     main()
