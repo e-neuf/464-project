@@ -22,8 +22,8 @@ class CylinderNet(nn.Module):
         cylinder_params = self.feature_mapper(cylinder_params).view(self.num_cylinders, 8)
 
         cylinder_params = torch.sigmoid(cylinder_params.view(-1, 8))
-        cylinder_adder = torch.tensor([-0.8, -0.8, -0.8, -0.8, -0.8, -0.8, 0.1, 0.1]).to(cylinder_params.device)
-        cylinder_multiplier = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2]).to(cylinder_params.device)
+        cylinder_adder = torch.tensor([-0.8, -0.8, -0.8, -1.0, -1.0, -1.0, 0.1, 0.1]).to(cylinder_params.device)
+        cylinder_multiplier = torch.tensor([1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 0.1, 0.1]).to(cylinder_params.device)
         cylinder_params = cylinder_params * cylinder_multiplier + cylinder_adder
 
         cylinder_sdf = determine_cylinder_sdf(query_points, cylinder_params)
