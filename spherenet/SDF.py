@@ -71,10 +71,12 @@ def determine_cylinder_sdf(query_points, cylinder_params):
     axes_normalized = F.normalize(axes)
     
     for i in range(num_cylinders):
-        # calcualte distance from query points to cylinder axis
+        # project query points onto cylinder axis
         scalar_points = torch.linalg.vecdot(query_points - centers[i,:], axes_normalized[i,:] - centers[i,:])
         projection = scalar_points[:, np.newaxis] * axes_normalized[i,:]
         closest_points = centers[i,:] + projection
+        
+        # calcualte distance from query points to cylinder axis
         dist_to_axis = torch.linalg.vector_norm(query_points - closest_points, dim=1)
         point_is_within_radius = torch.le(dist_to_axis, radii[i])
 
